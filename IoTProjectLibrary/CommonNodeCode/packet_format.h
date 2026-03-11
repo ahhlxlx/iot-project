@@ -1,6 +1,8 @@
+
 #ifndef PACKET_FORMAT_H
 #define PACKET_FORMAT_H
 
+#define LIB_VERSION "1.0"
 #include <stdint.h>
 
 #define MAX_HOPS 10
