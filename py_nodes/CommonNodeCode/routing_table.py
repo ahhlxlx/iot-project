@@ -1,5 +1,4 @@
-from cmath import inf
-
+from math import inf
 
 class RouteEntry:
     def __init__(self, neighbor_id, avg_latency, rssi, power_cost):
