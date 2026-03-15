@@ -1,0 +1,12 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual Environment
+.venv/
+
+# VS Code settings (optional, but keeps Git clean)
+.vscode/
+
+# Build files
+*.log
