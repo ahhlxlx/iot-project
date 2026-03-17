@@ -184,6 +184,9 @@ def forward_packet(msg: dict):
     if protocol == PROTOCOL_WIFI:
         with neighbour_lock:
             hop_ip = neighbour_ips.get(best_hop)
+        if not hop_ip:
+            # Try gateway IP from config as last resort
+            hop_ip = GATEWAY_IP
         if hop_ip and wifi_sock:
             try:
                 wifi_sock.sendto(payload.encode(), (hop_ip, UDP_PORT))
@@ -271,9 +274,13 @@ def wifi_listener():
             msg        = json.loads(data.decode())
 
             if msg["type"] == "HELLO":
-                nid = msg["node_id"]
+                nid = msg.get("node_id")
+                if nid is None:
+                    continue
                 with neighbour_lock:
                     neighbour_ips[nid] = msg.get("ip", sender_ip)
+                # Register neighbour in routing table regardless of whether
+                # it is another mesh node or the gateway
                 routing_table.update_route(nid, 0, msg.get("rssi", 0), 1.0, PROTOCOL_WIFI)
                 print(f"[WiFi] Hello from {nid:#04x}  ip={sender_ip}")
 
@@ -283,8 +290,16 @@ def wifi_listener():
             elif msg["type"] == "ACK":
                 sent    = msg.get("send_time_ms", 0)
                 latency = utime.ticks_diff(utime.ticks_ms(), sent)
+                if latency < 0 or latency > 60_000:
+                    latency = 0
                 seq     = msg.get("seq_num", -1)
+                src_id  = msg.get("dest_id", GATEWAY_ID)  # ACK dest_id is our node id
                 metrics.record_receive(seq)
+                # FIX: register the gateway as a reachable neighbour via WiFi
+                # so select_best_next_hop() returns GATEWAY_ID instead of 0xFF
+                routing_table.update_route(GATEWAY_ID, latency, 0, 1.0, PROTOCOL_WIFI)
+                with neighbour_lock:
+                    neighbour_ips[GATEWAY_ID] = sender_ip
                 print(f"[WiFi] ACK seq={seq}  latency={latency}ms")
 
         except OSError:
@@ -643,20 +658,31 @@ def main():
             best_hop = routing_table.select_best_next_hop()
 
             if best_hop is None or best_hop == 0xFF:
-                # No neighbours yet — send directly to gateway on all protocols
+                # No neighbours known yet — send on all protocols to bootstrap
+                # discovery. Once we receive an ACK, gateway gets added to the
+                # routing table and we switch to single-protocol sends.
+                print("[Node] No known neighbours — broadcasting on all protocols")
                 if my_ip:
                     wifi_send_to_gateway()
                 ble_send_to_gateway()
                 lora_send_to_gateway()
             else:
+                # We have a known best hop — send on its protocol only.
+                # This avoids wasting seq numbers on all 3 protocols and
+                # reduces the false packet-loss warnings on the gateway.
                 entry    = routing_table.entries.get(best_hop)
                 protocol = entry.protocol if entry else PROTOCOL_WIFI
+
                 if protocol == PROTOCOL_WIFI and my_ip:
                     wifi_send_to_gateway()
                 elif protocol == PROTOCOL_BLE:
                     ble_send_to_gateway()
                 elif protocol == PROTOCOL_LORA:
                     lora_send_to_gateway()
+                else:
+                    # Fallback — WiFi if available
+                    if my_ip:
+                        wifi_send_to_gateway()
 
             last_packet = now
 

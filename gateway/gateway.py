@@ -106,7 +106,10 @@ def process_packet(msg: dict, sender_label: str = "?"):
     with stats_lock:
         s = stats[proto_name]
 
-        # Detect lost packets — gaps > 10 are cross-protocol seq jumps not loss
+        # Detect lost packets.
+        # Gap of 1-2 is normal: node uses a shared seq counter across all 3
+        # protocols, so each protocol naturally skips by ~2 per cycle.
+        # Only flag as genuine loss when gap > 2.
         if s["last_seq"] >= 0:
             gap = seq - s["last_seq"] - 1
             if gap > 2:
@@ -241,6 +244,87 @@ def ble_listener():
                 await asyncio.sleep(2)
 
     asyncio.run(ble_loop())   # ← must be INSIDE ble_listener, at the bottom
+    
+    """
+    Runs an asyncio event loop in its own thread.
+    Scans for MeshNode_* BLE peripherals, connects, and subscribes
+    to GATT notifications on characteristic 0x2A56.
+    """
+    try:
+        from bleak import BleakScanner, BleakClient
+        from bleak.exc import BleakError
+    except ImportError:
+        log.error("[BLE] bleak not installed — run: pip3 install bleak --break-system-packages")
+        return
+
+    async def on_notify(sender, data: bytearray):
+        try:
+            msg = json.loads(data.decode("utf-8", "ignore"))
+            # sender is a BleakGATTCharacteristic object — use the client address instead
+            addr = getattr(sender, 'service', {})
+            process_packet(msg, f"BLE:{addr}")
+        except Exception as e:
+            log.error("[BLE] Parse error from %s: %s", sender, e)
+
+async def ble_loop():
+    connected_clients: dict = {}
+
+    while True:
+        try:
+            log.info("[BLE] Scanning for MeshNode_* devices...")
+            devices = await BleakScanner.discover(timeout=BLE_SCAN_TIMEOUT)
+
+            for d in devices:
+                name = d.name or ""
+                if not name.startswith("MeshNode_"):
+                    continue
+
+                addr = d.address
+                if addr in connected_clients and connected_clients[addr].is_connected:
+                    continue   # already connected and healthy
+
+                log.info("[BLE] Found %s at %s — connecting...", name, addr)
+                try:
+                    client = BleakClient(addr, timeout=20.0)
+                    await client.connect()
+
+                    if not client.is_connected:
+                        log.warning("[BLE] Failed to connect to %s", addr)
+                        continue
+
+                    # Capture device address in closure so notify handler
+                    # logs the device address instead of the characteristic object
+                    async def make_notify_handler(device_addr):
+                        async def on_notify(sender, data: bytearray):
+                            try:
+                                msg = json.loads(data.decode("utf-8", "ignore"))
+                                process_packet(msg, f"BLE:{device_addr}")
+                            except Exception as e:
+                                log.error("[BLE] Parse error from %s: %s", device_addr, e)
+                        return on_notify
+
+                    handler = await make_notify_handler(addr)
+                    await client.start_notify(_MESH_CHAR_UUID, handler)
+                    connected_clients[addr] = client
+                    log.info("[BLE] Subscribed to notifications from %s", name)
+
+                except BleakError as e:
+                    log.error("[BLE] Connect error (%s): %s", addr, e)
+                except Exception as e:
+                    log.error("[BLE] Unexpected connect error (%s): %s", addr, e)
+
+            # Clean up disconnected clients so they get re-scanned next pass
+            to_remove = [a for a, c in connected_clients.items() if not c.is_connected]
+            for addr in to_remove:
+                log.info("[BLE] %s disconnected — will re-scan", addr)
+                del connected_clients[addr]
+
+            await asyncio.sleep(BLE_SCAN_INTERVAL)
+
+        except Exception as e:
+            log.error("[BLE] Loop error: %s", e)
+            await asyncio.sleep(2)
+    asyncio.run(ble_loop())
 
 
 # ══════════════════════════════════════════════════════════════════════════════
