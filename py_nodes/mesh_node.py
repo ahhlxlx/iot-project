@@ -164,11 +164,68 @@ def handle_received_data(msg, sender_label="?"):
         forward_packet(msg)
 
 
+def send_data():
+    """
+    Send data toward the gateway via the best next hop.
+    Final dest is always GATEWAY_ID, but the packet is physically
+    sent to the best neighbour who then forwards it onward — enabling
+    true multi-hop mesh routing.
+
+    Routing sequence:
+      1. select_best_next_hop() picks lowest-cost neighbour
+      2. Packet dest_id = GATEWAY_ID (final destination)
+      3. Packet is SENT to the next hop node's IP/handle
+      4. That node receives it, sees dest_id != NODE_ID, calls forward_packet()
+      5. Repeats until gateway receives it (hops > 1 in gateway log)
+    """
+    best_hop = routing_table.select_best_next_hop()
+
+    # No known neighbours yet — flood all protocols to bootstrap discovery.
+    # Once we receive an ACK, the gateway gets registered and we switch to
+    # single-protocol targeted sends.
+    if best_hop is None or best_hop == 0xFF:
+        print("[Node] No known neighbours — flooding all protocols")
+        if my_ip:
+            wifi_send_to_gateway()
+        ble_send_to_gateway()
+        lora_send_to_gateway()
+        return
+
+    entry    = routing_table.entries.get(best_hop)
+    protocol = entry.protocol if entry else PROTOCOL_WIFI
+
+    # Build packet — final destination is always the gateway
+    pkt     = make_packet(GATEWAY_ID, protocol)
+    payload = build_data_payload(pkt)
+
+    if protocol == PROTOCOL_WIFI and wifi_sock:
+        with neighbour_lock:
+            hop_ip = neighbour_ips.get(best_hop, GATEWAY_IP)
+        try:
+            wifi_sock.sendto(payload.encode(), (hop_ip, UDP_PORT))
+            print(f"[WiFi] Data seq={pkt.seq_num} → {best_hop:#04x} (next hop)")
+        except OSError as e:
+            print(f"[WiFi] Send error: {e}")
+
+    elif protocol == PROTOCOL_BLE:
+        if not _ble_connections:
+            print("[BLE] No BLE connections — skipping")
+            return
+        data = payload.encode()[:512]
+        for conn_handle in list(_ble_connections.keys()):
+            try:
+                ble.gatts_notify(conn_handle, _ble_char_handle, data)
+                print(f"[BLE] Data seq={pkt.seq_num} → {best_hop:#04x} (next hop)")
+            except Exception as e:
+                print(f"[BLE] Notify error: {e}")
+                _ble_connections.pop(conn_handle, None)
+
+    elif protocol == PROTOCOL_LORA:
+        lora_send(payload)
+        print(f"[LoRa] Data seq={pkt.seq_num} → {best_hop:#04x} (next hop)")
+
+
 def forward_packet(msg: dict):
-    """
-    Pick the best next hop from routing table and forward
-    using the protocol stored in the routing entry.
-    """
     best_hop = routing_table.select_best_next_hop()
     if best_hop == 0xFF or best_hop is None:
         print("[Route] No neighbours — dropping packet")
@@ -655,35 +712,7 @@ def main():
 
         # Send data packet via best protocol
         if now - last_packet >= PACKET_INTERVAL:
-            best_hop = routing_table.select_best_next_hop()
-
-            if best_hop is None or best_hop == 0xFF:
-                # No neighbours known yet — send on all protocols to bootstrap
-                # discovery. Once we receive an ACK, gateway gets added to the
-                # routing table and we switch to single-protocol sends.
-                print("[Node] No known neighbours — broadcasting on all protocols")
-                if my_ip:
-                    wifi_send_to_gateway()
-                ble_send_to_gateway()
-                lora_send_to_gateway()
-            else:
-                # We have a known best hop — send on its protocol only.
-                # This avoids wasting seq numbers on all 3 protocols and
-                # reduces the false packet-loss warnings on the gateway.
-                entry    = routing_table.entries.get(best_hop)
-                protocol = entry.protocol if entry else PROTOCOL_WIFI
-
-                if protocol == PROTOCOL_WIFI and my_ip:
-                    wifi_send_to_gateway()
-                elif protocol == PROTOCOL_BLE:
-                    ble_send_to_gateway()
-                elif protocol == PROTOCOL_LORA:
-                    lora_send_to_gateway()
-                else:
-                    # Fallback — WiFi if available
-                    if my_ip:
-                        wifi_send_to_gateway()
-
+            send_data()
             last_packet = now
 
         # Poll LoRa for incoming packets
