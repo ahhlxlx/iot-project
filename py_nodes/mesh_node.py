@@ -35,7 +35,7 @@ from routing_table import RoutingTable
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIGURATION  ← change NODE_ID per device before flashing
 # ─────────────────────────────────────────────────────────────────────────────
-NODE_ID          = 0x01        # 0x01 = Node A, 0x02 = Node B, 0x03 = Node C
+NODE_ID          = 0x02        # 0x01 = Node A, 0x02 = Node B, 0x03 = Node C
 GATEWAY_ID       = 0xFF        # Reserved for gateway
 
 PROTOCOL_WIFI    = 2
@@ -43,8 +43,8 @@ PROTOCOL_BLE     = 1
 PROTOCOL_LORA    = 3
 
 # WiFi
-WIFI_SSID        = "YOUR_SSID"
-WIFI_PASSWORD    = "YOUR_PASSWORD"
+WIFI_SSID        = "lixuan"
+WIFI_PASSWORD    = "testTest"
 GATEWAY_IP       = "192.168.1.100"   # RPi4 IP — run `hostname -I` on RPi
 BROADCAST_IP     = "255.255.255.255"
 UDP_PORT         = 5005
@@ -64,8 +64,9 @@ LORA_SCK         = 18
 LORA_MOSI        = 19
 LORA_MISO        = 16
 LORA_CS          = 17
-LORA_RST         = 20
-LORA_FREQ        = 915      # MHz — change to 433 or 868 for your region
+LORA_RST         = 14
+LORA_DIO0        = 15
+LORA_FREQ        = 923      # MHz — change to 433 or 868 for your region
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -470,6 +471,7 @@ def lora_setup():
                        sck=Pin(LORA_SCK), mosi=Pin(LORA_MOSI), miso=Pin(LORA_MISO))
         lora_cs  = Pin(LORA_CS,  Pin.OUT)
         lora_rst = Pin(LORA_RST, Pin.OUT)
+        lora_dio0 = Pin(LORA_DIO0, Pin.IN)
 
         # Reset
         lora_rst.value(0); time.sleep(0.01)
