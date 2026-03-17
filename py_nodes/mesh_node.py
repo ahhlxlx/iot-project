@@ -82,6 +82,7 @@ seq_lock        = _thread.allocate_lock()
 # Track neighbour IPs for WiFi forwarding: {node_id: ip_string}
 neighbour_ips   = {}
 neighbour_lock  = _thread.allocate_lock()
+my_ip           = None   # set in main() after WiFi connects, read by send_data()
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -669,7 +670,7 @@ def lora_listener():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main():
-    global _ble_reconnect_needed
+    global _ble_reconnect_needed, my_ip
 
     print(f"[Node] Mesh Node {NODE_ID:#04x} starting...")
 
