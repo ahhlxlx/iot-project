@@ -28,6 +28,7 @@ import bluetooth
 from machine import Pin, SPI
 
 sys.path.append('/Project')
+# sys.path.append('/CommonNodeCode')
 from metrics import Metrics
 from packet_format import Packet
 from routing_table import RoutingTable
@@ -35,7 +36,7 @@ from routing_table import RoutingTable
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIGURATION  ← change NODE_ID per device before flashing
 # ─────────────────────────────────────────────────────────────────────────────
-NODE_ID          = 0x02        # 0x01 = Node A, 0x02 = Node B, 0x03 = Node C
+NODE_ID          = 0x03        # 0x01 = Node A, 0x02 = Node B, 0x03 = Node C
 GATEWAY_ID       = 0xFF        # Reserved for gateway
 
 PROTOCOL_WIFI    = 2
@@ -554,12 +555,18 @@ def lora_receive():
 
 
 def lora_broadcast_hello():
+    if not lora_ok:
+        return
+
     payload = build_hello_payload(PROTOCOL_LORA)
     lora_send(payload)
     print(f"[LoRa] Hello broadcast from {NODE_ID:#04x}")
 
 
 def lora_send_to_gateway():
+    if not lora_ok:
+        return
+
     pkt     = make_packet(GATEWAY_ID, PROTOCOL_LORA)
     payload = build_data_payload(pkt)
     lora_send(payload)
