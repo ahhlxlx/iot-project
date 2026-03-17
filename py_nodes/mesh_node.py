@@ -46,7 +46,7 @@ PROTOCOL_LORA    = 3
 # WiFi
 WIFI_SSID        = "lixuan"
 WIFI_PASSWORD    = "testTest"
-GATEWAY_IP       = "192.168.1.100"   # RPi4 IP — run `hostname -I` on RPi
+GATEWAY_IP       = "172.20.10.4"   # RPi4 IP — run `hostname -I` on RPi
 BROADCAST_IP     = "255.255.255.255"
 UDP_PORT         = 5005
 
