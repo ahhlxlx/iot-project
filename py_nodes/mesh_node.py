@@ -140,11 +140,24 @@ def make_packet(dest, protocol):
 def handle_received_data(msg, sender_label="?"):
     """
     Common handler for DATA packets received on ANY protocol.
-    - If for us: record metrics and update routing table
-    - If for gateway or another node: forward via best hop
+    - Loop detection: drop packet if NODE_ID already in path
+    - If dest is GATEWAY_ID: forward toward gateway
+    - If dest is NODE_ID: record metrics
+    - Otherwise: forward via best hop
     """
     dest = msg.get("dest_id")
     seq  = msg.get("seq_num", -1)
+    path = msg.get("path", [])
+
+    # Drop packet if we are already in the path — prevents forwarding loops
+    if NODE_ID in path:
+        print(f"[Route] Loop detected — dropping seq={seq}")
+        return
+
+    if dest == GATEWAY_ID:
+        # Packet is heading to gateway — forward it along
+        forward_packet(msg)
+        return
 
     if dest == NODE_ID:
         recv    = utime.ticks_ms()
@@ -227,13 +240,26 @@ def send_data():
 
 
 def forward_packet(msg: dict):
-    best_hop = routing_table.select_best_next_hop()
-    if best_hop == 0xFF or best_hop is None:
-        print("[Route] No neighbours — dropping packet")
+    """
+    Forward a packet toward the gateway via the best next hop.
+    Skips any node already in the packet path to prevent loops.
+    """
+    path = msg.get("path", [])
+
+    # Pick best hop, skipping nodes already visited
+    candidates = {k: v for k, v in routing_table.entries.items() if k not in path}
+    if not candidates:
+        print(f"[Route] No valid next hop (all candidates in path) — dropping seq={msg.get('seq_num')}")
         return
 
+    # Find lowest cost candidate
+    best_hop = min(
+        candidates,
+        key=lambda nid: candidates[nid].avg_latency + (candidates[nid].power_cost * 10)
+    )
+
     msg["hop_count"] = msg.get("hop_count", 0) + 1
-    msg["path"]      = msg.get("path", []) + [NODE_ID]
+    msg["path"]      = path + [NODE_ID]
     payload          = json.dumps(msg)
 
     entry    = routing_table.entries.get(best_hop)
@@ -241,14 +267,11 @@ def forward_packet(msg: dict):
 
     if protocol == PROTOCOL_WIFI:
         with neighbour_lock:
-            hop_ip = neighbour_ips.get(best_hop)
-        if not hop_ip:
-            # Try gateway IP from config as last resort
-            hop_ip = GATEWAY_IP
+            hop_ip = neighbour_ips.get(best_hop, GATEWAY_IP)
         if hop_ip and wifi_sock:
             try:
                 wifi_sock.sendto(payload.encode(), (hop_ip, UDP_PORT))
-                print(f"[Route] WiFi forward seq={msg.get('seq_num')} → {hop_ip}")
+                print(f"[Route] WiFi forward seq={msg.get('seq_num')} → {best_hop:#04x} ({hop_ip})")
             except OSError as e:
                 print(f"[Route] WiFi forward error: {e}")
 
