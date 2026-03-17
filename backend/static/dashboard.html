@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>IoT Mesh Network — Operations Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg:        #0a0c10;
+    --surface:   #111318;
+    --border:    #1e2330;
+    --accent:    #00d4ff;
+    --accent2:   #7c3aed;
+    --green:     #22c55e;
+    --yellow:    #f59e0b;
+    --red:       #ef4444;
+    --text:      #e2e8f0;
+    --muted:     #64748b;
+    --font-mono: 'IBM Plex Mono', monospace;
+    --font-sans: 'IBM Plex Sans', sans-serif;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Scanline overlay ── */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(
+      0deg, transparent, transparent 2px,
+      rgba(0,212,255,0.015) 2px, rgba(0,212,255,0.015) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  /* ── Header ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 28px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(17,19,24,0.95);
+    position: sticky; top: 0; z-index: 100;
+    backdrop-filter: blur(12px);
+  }
+  .logo {
+    display: flex; align-items: center; gap: 12px;
+  }
+  .logo-icon {
+    width: 32px; height: 32px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px;
+  }
+  .logo-text { font-family: var(--font-mono); font-size: 13px; }
+  .logo-text strong { color: var(--accent); font-weight: 600; display: block; }
+  .logo-text span   { color: var(--muted); font-size: 11px; }
+
+  .header-right { display: flex; align-items: center; gap: 20px; }
+  .ws-status {
+    display: flex; align-items: center; gap: 6px;
+    font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+  }
+  .ws-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--red);
+    transition: background 0.3s;
+  }
+  .ws-dot.connected { background: var(--green); animation: pulse 2s infinite; }
+  @keyframes pulse {
+    0%,100% { box-shadow: 0 0 0 0 rgba(34,197,94,0.4); }
+    50%      { box-shadow: 0 0 0 5px rgba(34,197,94,0); }
+  }
+  .last-update { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+
+  /* ── Layout ── */
+  main { padding: 24px 28px; display: grid; gap: 20px; }
+
+  /* ── Stat tiles ── */
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+  }
+  .stat-tile {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 18px 20px;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.2s;
+  }
+  .stat-tile:hover { border-color: var(--accent); }
+  .stat-tile::after {
+    content: '';
+    position: absolute; top: 0; left: 0;
+    width: 3px; height: 100%;
+    background: var(--accent);
+  }
+  .stat-tile.green::after { background: var(--green); }
+  .stat-tile.yellow::after { background: var(--yellow); }
+  .stat-tile.purple::after { background: var(--accent2); }
+  .stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+  .stat-value { font-family: var(--font-mono); font-size: 28px; font-weight: 600; margin: 6px 0 2px; color: var(--text); }
+  .stat-sub   { font-size: 11px; color: var(--muted); }
+
+  /* ── Section grids ── */
+  .mid-row  { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .wide-row { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
+
+  /* ── Cards ── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .card-header {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .card-title {
+    font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+    color: var(--accent); text-transform: uppercase; letter-spacing: 0.1em;
+  }
+  .card-badge {
+    font-family: var(--font-mono); font-size: 10px;
+    background: rgba(0,212,255,0.1); color: var(--accent);
+    border: 1px solid rgba(0,212,255,0.2);
+    padding: 2px 8px; border-radius: 3px;
+  }
+  .card-body { padding: 16px 18px; }
+
+  /* ── Health matrix ── */
+  .health-table { width: 100%; border-collapse: collapse; }
+  .health-table th {
+    text-align: left; font-family: var(--font-mono); font-size: 10px;
+    color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em;
+    padding: 6px 10px; border-bottom: 1px solid var(--border);
+  }
+  .health-table td { padding: 9px 10px; border-bottom: 1px solid rgba(30,35,48,0.6); font-size: 13px; }
+  .health-table tr:last-child td { border-bottom: none; }
+  .health-table tr:hover td { background: rgba(0,212,255,0.03); }
+
+  .status-badge {
+    padding: 2px 8px; border-radius: 3px;
+    font-family: var(--font-mono); font-size: 10px; font-weight: 600;
+  }
+  .status-Healthy  { background: rgba(34,197,94,0.15);  color: var(--green); }
+  .status-Degraded { background: rgba(245,158,11,0.15); color: var(--yellow); }
+  .status-Critical { background: rgba(239,68,68,0.15);  color: var(--red); }
+  .status-Offline  { background: rgba(100,116,139,0.15); color: var(--muted); }
+
+  .score-bar-wrap { display: flex; align-items: center; gap: 8px; }
+  .score-bar { flex: 1; height: 4px; background: var(--border); border-radius: 2px; }
+  .score-fill { height: 100%; border-radius: 2px; transition: width 0.6s ease; }
+  .score-num  { font-family: var(--font-mono); font-size: 11px; width: 32px; text-align: right; }
+
+  .proto-tag {
+    padding: 1px 6px; border-radius: 3px;
+    font-family: var(--font-mono); font-size: 10px;
+  }
+  .proto-BLE  { background: rgba(124,58,237,0.2); color: #a78bfa; }
+  .proto-WiFi { background: rgba(0,212,255,0.15); color: var(--accent); }
+  .proto-LoRa { background: rgba(245,158,11,0.15); color: var(--yellow); }
+
+  /* ── Packet feed ── */
+  .feed-list {
+    max-height: 340px; overflow-y: auto;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+  }
+  .feed-item {
+    display: grid;
+    grid-template-columns: 90px 100px 80px 60px 70px 1fr;
+    gap: 8px;
+    padding: 8px 4px;
+    border-bottom: 1px solid rgba(30,35,48,0.5);
+    font-family: var(--font-mono); font-size: 11px;
+    align-items: center;
+    animation: fadeIn 0.3s ease;
+  }
+  @keyframes fadeIn { from { opacity:0; transform: translateY(-4px); } to { opacity:1; transform:none; } }
+  .feed-item:last-child { border-bottom: none; }
+  .feed-time  { color: var(--muted); }
+  .feed-src   { color: var(--accent); }
+  .feed-lat   { color: var(--green); }
+  .feed-lat.slow { color: var(--yellow); }
+  .feed-lat.bad  { color: var(--red); }
+  .feed-hops  { color: var(--muted); }
+  .feed-rssi  { color: var(--muted); }
+
+  .feed-header {
+    display: grid;
+    grid-template-columns: 90px 100px 80px 60px 70px 1fr;
+    gap: 8px;
+    padding: 6px 4px 8px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em;
+  }
+
+  /* ── Chart container ── */
+  .chart-wrap { position: relative; height: 220px; }
+
+  /* ── Route cards ── */
+  .route-item {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid var(--border);
+    border-radius: 6px; padding: 12px 14px;
+    margin-bottom: 10px;
+  }
+  .route-item:last-child { margin-bottom: 0; }
+  .route-src  { font-family: var(--font-mono); font-size: 12px; color: var(--accent); margin-bottom: 8px; }
+  .route-path { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .route-node {
+    background: rgba(0,212,255,0.1); color: var(--accent);
+    border: 1px solid rgba(0,212,255,0.2);
+    padding: 2px 8px; border-radius: 3px;
+    font-family: var(--font-mono); font-size: 11px;
+  }
+  .route-arrow { color: var(--muted); font-size: 12px; }
+  .route-meta  { font-size: 11px; color: var(--muted); display: flex; gap: 16px; flex-wrap: wrap; }
+  .route-meta span { display: flex; align-items: center; gap: 4px; }
+  .flap-warn { color: var(--yellow); font-size: 10px; margin-top: 6px; font-family: var(--font-mono); }
+
+  /* ── Empty states ── */
+  .empty { text-align: center; padding: 40px 20px; color: var(--muted); font-family: var(--font-mono); font-size: 12px; }
+
+  /* ── Responsive ── */
+  @media (max-width: 1100px) {
+    .stats-row { grid-template-columns: repeat(2,1fr); }
+    .mid-row, .wide-row { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 640px) {
+    .stats-row { grid-template-columns: 1fr 1fr; }
+    header { padding: 12px 16px; }
+    main   { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">⬡</div>
+    <div class="logo-text">
+      <strong>MESH-OPS</strong>
+      <span>IoT Network Operations Dashboard</span>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="ws-status">
+      <div class="ws-dot" id="wsDot"></div>
+      <span id="wsLabel">DISCONNECTED</span>
+    </div>
+    <div class="last-update" id="lastUpdate">—</div>
+  </div>
+</header>
+
+<main>
+  <!-- Stats row -->
+  <div class="stats-row">
+    <div class="stat-tile green">
+      <div class="stat-label">Active Nodes</div>
+      <div class="stat-value" id="statNodes">—</div>
+      <div class="stat-sub" id="statNodesTotal">of — total</div>
+    </div>
+    <div class="stat-tile">
+      <div class="stat-label">Total Packets</div>
+      <div class="stat-value" id="statPackets">—</div>
+      <div class="stat-sub">last 500 msgs</div>
+    </div>
+    <div class="stat-tile yellow">
+      <div class="stat-label">Avg Latency</div>
+      <div class="stat-value" id="statLatency">—</div>
+      <div class="stat-sub">milliseconds</div>
+    </div>
+    <div class="stat-tile purple">
+      <div class="stat-label">Avg Packet Loss</div>
+      <div class="stat-value" id="statLoss">—</div>
+      <div class="stat-sub">percent</div>
+    </div>
+  </div>
+
+  <!-- Health + Routes -->
+  <div class="wide-row">
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Node Health Matrix</span>
+        <span class="card-badge" id="healthBadge">0 nodes</span>
+      </div>
+      <div class="card-body" style="padding:0;">
+        <div id="healthBody">
+          <div class="empty">Waiting for node data…</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Best Routes</span>
+        <span class="card-badge" id="routeBadge">0 sources</span>
+      </div>
+      <div class="card-body" id="routeBody" style="max-height:340px;overflow-y:auto;">
+        <div class="empty">Waiting for route data…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Latency chart + Live feed -->
+  <div class="mid-row">
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Latency & Packet Loss</span>
+        <span class="card-badge" id="chartNodeLabel">all nodes</span>
+      </div>
+      <div class="card-body">
+        <div class="chart-wrap"><canvas id="latencyChart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Live Packet Feed</span>
+        <span class="card-badge" id="feedCount">0 packets</span>
+      </div>
+      <div class="card-body" style="padding:0 18px;">
+        <div class="feed-header">
+          <span>Time</span><span>Source</span><span>Latency</span>
+          <span>Hops</span><span>RSSI</span><span>Proto</span>
+        </div>
+        <div class="feed-list" id="feedList">
+          <div class="empty" style="padding:30px;">Waiting for packets…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+const API   = '';   // same origin
+let latencyChart = null;
+let feedPackets  = [];
+let pollInterval = null;
+
+// ── Chart init ────────────────────────────────────────────────────────────────
+function initChart() {
+  const ctx = document.getElementById('latencyChart').getContext('2d');
+  latencyChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        {
+          label: 'Latency (ms)',
+          data: [], borderColor: '#00d4ff', backgroundColor: 'rgba(0,212,255,0.08)',
+          borderWidth: 1.5, pointRadius: 2, tension: 0.4, fill: true, yAxisID: 'y',
+        },
+        {
+          label: 'Packet Loss (%)',
+          data: [], borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,0.08)',
+          borderWidth: 1.5, pointRadius: 2, tension: 0.4, fill: true, yAxisID: 'y1',
+        },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 400 },
+      plugins: { legend: { labels: { color: '#64748b', font: { family: 'IBM Plex Mono', size: 10 } } } },
+      scales: {
+        x: { ticks: { color: '#64748b', font: { family: 'IBM Plex Mono', size: 9 }, maxTicksLimit: 8 }, grid: { color: '#1e2330' } },
+        y: {
+          position: 'left', ticks: { color: '#64748b', font: { family: 'IBM Plex Mono', size: 9 } },
+          grid: { color: '#1e2330' }, title: { display: true, text: 'ms', color: '#64748b', font: { size: 10 } },
+        },
+        y1: {
+          position: 'right', ticks: { color: '#64748b', font: { family: 'IBM Plex Mono', size: 9 } },
+          grid: { drawOnChartArea: false }, min: 0, max: 100,
+          title: { display: true, text: '%', color: '#64748b', font: { size: 10 } },
+        },
+      },
+    },
+  });
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function fmtTime(epochMs) {
+  const d = new Date(epochMs);
+  return d.toTimeString().slice(0,8);
+}
+
+function scoreColor(score) {
+  if (score >= 75) return '#22c55e';
+  if (score >= 45) return '#f59e0b';
+  return '#ef4444';
+}
+
+// ── Render health matrix ──────────────────────────────────────────────────────
+function renderHealth(nodes) {
+  const body = document.getElementById('healthBody');
+  document.getElementById('healthBadge').textContent = `${nodes.length} node${nodes.length!==1?'s':''}`;
+
+  if (!nodes.length) { body.innerHTML = '<div class="empty">No nodes detected yet</div>'; return; }
+
+  let html = `<table class="health-table">
+    <thead><tr>
+      <th>Node ID</th><th>Status</th><th>Score</th>
+      <th>Latency</th><th>Pkt Loss</th><th>RSSI</th><th>Proto</th><th>Last Seen</th>
+    </tr></thead><tbody>`;
+
+  for (const n of nodes) {
+    const col   = scoreColor(n.score);
+    const pctW  = n.score;
+    const ls    = n.last_seen_sec < 60 ? `${n.last_seen_sec}s ago`
+                : `${(n.last_seen_sec/60).toFixed(1)}m ago`;
+    html += `<tr>
+      <td style="font-family:var(--font-mono);color:var(--accent)">${n.node_id}</td>
+      <td><span class="status-badge status-${n.status}">${n.status}</span></td>
+      <td>
+        <div class="score-bar-wrap">
+          <div class="score-bar"><div class="score-fill" style="width:${pctW}%;background:${col}"></div></div>
+          <span class="score-num" style="color:${col}">${n.score}</span>
+        </div>
+      </td>
+      <td style="font-family:var(--font-mono)">${n.avg_latency_ms} ms</td>
+      <td style="font-family:var(--font-mono)">${n.packet_loss_pct}%</td>
+      <td style="font-family:var(--font-mono)">${n.avg_rssi} dBm</td>
+      <td><span class="proto-tag proto-${n.protocol}">${n.protocol}</span></td>
+      <td style="color:var(--muted);font-family:var(--font-mono);font-size:11px">${ls}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  body.innerHTML = html;
+}
+
+// ── Render routes ─────────────────────────────────────────────────────────────
+function renderRoutes(routes) {
+  const body = document.getElementById('routeBody');
+  document.getElementById('routeBadge').textContent = `${routes.length} source${routes.length!==1?'s':''}`;
+
+  if (!routes.length) { body.innerHTML = '<div class="empty">No route data yet</div>'; return; }
+
+  let html = '';
+  for (const r of routes) {
+    const rec  = r.recommended;
+    const path = rec ? [...(rec.path || []), 'GATEWAY'] : [];
+    const pathHtml = path.map((n,i) =>
+      `<span class="route-node">${n}</span>${i<path.length-1?'<span class="route-arrow">→</span>':''}`
+    ).join('');
+
+    html += `<div class="route-item">
+      <div class="route-src">▸ ${r.source}</div>
+      <div class="route-path">${pathHtml || '<span style="color:var(--muted);font-size:11px">no path data</span>'}</div>
+      ${rec ? `<div class="route-meta">
+        <span>⏱ ${rec.avg_latency_ms} ms</span>
+        <span>↕ ${rec.hop_count} hops</span>
+        <span>cost ${rec.total_cost}</span>
+        <span>${rec.is_stale ? '⚠ stale' : '✓ fresh'}</span>
+      </div>` : ''}
+      ${r.flap_detected ? '<div class="flap-warn">⚡ Route flapping detected</div>' : ''}
+    </div>`;
+  }
+  body.innerHTML = html;
+}
+
+// ── Render packet feed ────────────────────────────────────────────────────────
+const PROTO_NAME = {1:'BLE', 2:'WiFi', 3:'LoRa'};
+
+function addFeedPacket(pkt) {
+  feedPackets.unshift(pkt);
+  if (feedPackets.length > 100) feedPackets.pop();
+  renderFeed();
+}
+
+function renderFeed() {
+  const list = document.getElementById('feedList');
+  document.getElementById('feedCount').textContent = `${feedPackets.length} packets`;
+
+  if (!feedPackets.length) { list.innerHTML = '<div class="empty" style="padding:30px;">Waiting…</div>'; return; }
+
+  list.innerHTML = feedPackets.slice(0, 50).map(p => {
+    const latCls = p.latency_ms > 1000 ? 'bad' : p.latency_ms > 300 ? 'slow' : '';
+    const proto  = PROTO_NAME[p.protocol] || p.protocol;
+    const protoClass = `proto-${proto}`;
+    return `<div class="feed-item">
+      <span class="feed-time">${fmtTime(p.received_at)}</span>
+      <span class="feed-src">${p.src_id}</span>
+      <span class="feed-lat ${latCls}">${p.latency_ms} ms</span>
+      <span class="feed-hops">${p.hop_count} hops</span>
+      <span class="feed-rssi">${p.rssi} dBm</span>
+      <span><span class="proto-tag ${protoClass}">${proto}</span></span>
+    </div>`;
+  }).join('');
+}
+
+// ── Update chart from health data ─────────────────────────────────────────────
+function updateChart(nodes) {
+  if (!latencyChart || !nodes.length) return;
+  const labels   = nodes.map(n => n.node_id);
+  const latency  = nodes.map(n => n.avg_latency_ms);
+  const loss     = nodes.map(n => n.packet_loss_pct);
+
+  latencyChart.data.labels                = labels;
+  latencyChart.data.datasets[0].data      = latency;
+  latencyChart.data.datasets[1].data      = loss;
+  latencyChart.update('none');
+  document.getElementById('chartNodeLabel').textContent = `${nodes.length} nodes`;
+}
+
+// ── API polling ───────────────────────────────────────────────────────────────
+async function fetchStats() {
+  try {
+    const r = await fetch(`${API}/api/stats`);
+    if (!r.ok) return;
+    const d = await r.json();
+    document.getElementById('statNodes').textContent   = d.active_nodes ?? '—';
+    document.getElementById('statNodesTotal').textContent = `of ${d.total_nodes ?? '—'} total`;
+    document.getElementById('statPackets').textContent = d.total_packets ?? '—';
+    document.getElementById('statLatency').textContent = d.avg_latency_ms != null ? `${d.avg_latency_ms}` : '—';
+    document.getElementById('statLoss').textContent    = d.avg_packet_loss != null ? `${d.avg_packet_loss}%` : '—';
+  } catch {}
+}
+
+async function fetchHealth() {
+  try {
+    const r = await fetch(`${API}/api/health`);
+    if (!r.ok) return;
+    const nodes = await r.json();
+    renderHealth(nodes);
+    updateChart(nodes);
+  } catch {}
+}
+
+async function fetchRoutes() {
+  try {
+    const r = await fetch(`${API}/api/routes`);
+    if (!r.ok) return;
+    renderRoutes(await r.json());
+  } catch {}
+}
+
+async function fetchRecentPackets() {
+  try {
+    const r = await fetch(`${API}/api/packets?limit=50`);
+    if (!r.ok) return;
+    const pkts = await r.json();
+    feedPackets = pkts.map(p => ({
+      received_at: p.received_at,
+      src_id:      p.src_id,
+      latency_ms:  Math.round(p.latency_ms ?? 0),
+      hop_count:   p.hop_count,
+      rssi:        p.rssi,
+      protocol:    p.protocol,
+    }));
+    renderFeed();
+  } catch {}
+}
+
+function pollAll() {
+  fetchStats();
+  fetchHealth();
+  fetchRoutes();
+  document.getElementById('lastUpdate').textContent =
+    'UPDATED ' + new Date().toTimeString().slice(0,8);
+}
+
+// ── WebSocket ─────────────────────────────────────────────────────────────────
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws    = new WebSocket(`${proto}://${location.host}/ws/live`);
+  const dot   = document.getElementById('wsDot');
+  const lbl   = document.getElementById('wsLabel');
+
+  ws.onopen = () => {
+    dot.classList.add('connected');
+    lbl.textContent = 'LIVE';
+  };
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.event === 'new_packet') addFeedPacket(msg);
+    } catch {}
+    // Refresh stats & health on each packet
+    fetchStats();
+    fetchHealth();
+  };
+  ws.onclose = () => {
+    dot.classList.remove('connected');
+    lbl.textContent = 'RECONNECTING';
+    setTimeout(connectWS, 3000);
+  };
+  ws.onerror = () => ws.close();
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+initChart();
+fetchRecentPackets();
+pollAll();
+connectWS();
+pollInterval = setInterval(pollAll, 10000);   // full refresh every 10 s
+</script>
+</body>
+</html>

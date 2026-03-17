@@ -1,11 +1,12 @@
 from math import inf
 
 class RouteEntry:
-    def __init__(self, neighbor_id, avg_latency, rssi, power_cost):
+    def __init__(self, neighbor_id, avg_latency, rssi, power_cost, protocol=2):
         self.neighbor_id = neighbor_id
         self.avg_latency = avg_latency
         self.rssi = rssi
         self.power_cost = power_cost
+        self.protocol = protocol
 
 class RoutingTable:
     MAX_NEIGHBOR = 10
