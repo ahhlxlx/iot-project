@@ -14,8 +14,9 @@ class RoutingTable:
     def __init__(self):
         self.entries = {}
 
-    def update_route(self, neighbor_id, avg_latency, rssi, power_cost):
-        self.entries[neighbor_id] = RouteEntry(neighbor_id,avg_latency,rssi,power_cost)
+    # REPLACE WITH
+    def update_route(self, neighbor_id, avg_latency, rssi, power_cost, protocol=2):
+        self.entries[neighbor_id] = RouteEntry(neighbor_id, avg_latency, rssi, power_cost, protocol)
 
         if len(self.entries) > self.MAX_NEIGHBOR:
             oldest_key = next(iter(self.entries))
