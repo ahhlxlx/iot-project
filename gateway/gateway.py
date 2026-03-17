@@ -1,19 +1,15 @@
 """
 gateway/gateway.py  —  Run on Raspberry Pi 4
-Receives packets from all 3 protocols simultaneously:
+Receives packets from both protocols simultaneously:
   - WiFi nodes  → UDP socket (port 5005)
   - BLE nodes   → bleak GATT central (async scan + connect + subscribe)
-  - LoRa nodes  → SX1276 SPI module (via spidev)
 
 Install dependencies:
-  pip3 install flask bleak spidev RPi.GPIO --break-system-packages
+  pip3 install flask bleak --break-system-packages
 
 Environment variables (set in .env or export before running):
-  LORA_FREQ   — LoRa frequency in MHz (default: 915)
-  LORA_CS_PIN — BCM GPIO pin for LoRa CS (default: 25)
-  LORA_RST_PIN— BCM GPIO pin for LoRa RST (default: 17)
-  API_PORT    — Flask API port (default: 8080)
-  UDP_PORT    — UDP listen port (default: 5005)
+  API_PORT — Flask API port (default: 8080)
+  UDP_PORT — UDP listen port (default: 5005)
 """
 
 import os
@@ -41,11 +37,6 @@ log = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 UDP_PORT        = int(os.environ.get("UDP_PORT",    5005))
 API_PORT        = int(os.environ.get("API_PORT",    8080))
-LORA_FREQ       = int(os.environ.get("LORA_FREQ",   915))
-LORA_CS_PIN     = int(os.environ.get("LORA_CS_PIN", 25))
-LORA_RST_PIN    = int(os.environ.get("LORA_RST_PIN",17))
-LORA_SPI_BUS    = int(os.environ.get("LORA_SPI_BUS",   0))
-LORA_SPI_DEVICE = int(os.environ.get("LORA_SPI_DEVICE",0))
 GATEWAY_ID      = 0xFF
 
 # BLE
@@ -62,10 +53,8 @@ stats = {
                "min_lat": float("inf"), "max_lat": 0, "rssi_sum": 0},
     "ble"  : {"rx": 0, "lost": 0, "total_latency": 0, "last_seq": -1,
                "min_lat": float("inf"), "max_lat": 0, "rssi_sum": 0},
-    "lora" : {"rx": 0, "lost": 0, "total_latency": 0, "last_seq": -1,
-               "min_lat": float("inf"), "max_lat": 0, "rssi_sum": 0},
 }
-PROTO_MAP = {1: "ble", 2: "wifi", 3: "lora"}
+PROTO_MAP = {1: "ble", 2: "wifi"}
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -75,7 +64,7 @@ PROTO_MAP = {1: "ble", 2: "wifi", 3: "lora"}
 
 def process_packet(msg: dict, sender_label: str = "?"):
     """
-    Called by all 3 protocol listeners.
+    Called by both protocol listeners.
     Updates stats and detects packet loss.
     """
     ptype      = msg.get("type")
@@ -107,8 +96,8 @@ def process_packet(msg: dict, sender_label: str = "?"):
         s = stats[proto_name]
 
         # Detect lost packets.
-        # Gap of 1-2 is normal: node uses a shared seq counter across all 3
-        # protocols, so each protocol naturally skips by ~2 per cycle.
+        # Gap of 1 is normal: node uses a shared seq counter across both
+        # protocols, so each protocol naturally skips by ~1 per cycle.
         # Only flag as genuine loss when gap > 2.
         if s["last_seq"] >= 0:
             gap = seq - s["last_seq"] - 1
@@ -178,7 +167,16 @@ def wifi_listener():
 # BLE LISTENER  (bleak — cross-platform, actively maintained)
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════════════
+# BLE LISTENER  (bleak — cross-platform, actively maintained)
+# ══════════════════════════════════════════════════════════════════════════════
+
 def ble_listener():
+    """
+    Runs an asyncio event loop in its own thread.
+    Scans for MeshNode_* BLE peripherals, connects, and subscribes
+    to GATT notifications on characteristic 0x2A56.
+    """
     try:
         from bleak import BleakScanner, BleakClient
         from bleak.exc import BleakError
@@ -212,6 +210,8 @@ def ble_listener():
                             log.warning("[BLE] Failed to connect to %s", addr)
                             continue
 
+                        # Capture device address in closure so notify handler
+                        # logs the device address instead of the characteristic object
                         async def make_notify_handler(device_addr):
                             async def on_notify(sender, data: bytearray):
                                 try:
@@ -231,7 +231,7 @@ def ble_listener():
                     except Exception as e:
                         log.error("[BLE] Unexpected connect error (%s): %s", addr, e)
 
-                # Clean up disconnected clients
+                # Clean up disconnected clients so they get re-scanned next pass
                 to_remove = [a for a, c in connected_clients.items() if not c.is_connected]
                 for addr in to_remove:
                     log.info("[BLE] %s disconnected — will re-scan", addr)
@@ -243,203 +243,7 @@ def ble_listener():
                 log.error("[BLE] Loop error: %s", e)
                 await asyncio.sleep(2)
 
-    asyncio.run(ble_loop())   # ← must be INSIDE ble_listener, at the bottom
-    
-    """
-    Runs an asyncio event loop in its own thread.
-    Scans for MeshNode_* BLE peripherals, connects, and subscribes
-    to GATT notifications on characteristic 0x2A56.
-    """
-    try:
-        from bleak import BleakScanner, BleakClient
-        from bleak.exc import BleakError
-    except ImportError:
-        log.error("[BLE] bleak not installed — run: pip3 install bleak --break-system-packages")
-        return
-
-    async def on_notify(sender, data: bytearray):
-        try:
-            msg = json.loads(data.decode("utf-8", "ignore"))
-            # sender is a BleakGATTCharacteristic object — use the client address instead
-            addr = getattr(sender, 'service', {})
-            process_packet(msg, f"BLE:{addr}")
-        except Exception as e:
-            log.error("[BLE] Parse error from %s: %s", sender, e)
-
-async def ble_loop():
-    connected_clients: dict = {}
-
-    while True:
-        try:
-            log.info("[BLE] Scanning for MeshNode_* devices...")
-            devices = await BleakScanner.discover(timeout=BLE_SCAN_TIMEOUT)
-
-            for d in devices:
-                name = d.name or ""
-                if not name.startswith("MeshNode_"):
-                    continue
-
-                addr = d.address
-                if addr in connected_clients and connected_clients[addr].is_connected:
-                    continue   # already connected and healthy
-
-                log.info("[BLE] Found %s at %s — connecting...", name, addr)
-                try:
-                    client = BleakClient(addr, timeout=20.0)
-                    await client.connect()
-
-                    if not client.is_connected:
-                        log.warning("[BLE] Failed to connect to %s", addr)
-                        continue
-
-                    # Capture device address in closure so notify handler
-                    # logs the device address instead of the characteristic object
-                    async def make_notify_handler(device_addr):
-                        async def on_notify(sender, data: bytearray):
-                            try:
-                                msg = json.loads(data.decode("utf-8", "ignore"))
-                                process_packet(msg, f"BLE:{device_addr}")
-                            except Exception as e:
-                                log.error("[BLE] Parse error from %s: %s", device_addr, e)
-                        return on_notify
-
-                    handler = await make_notify_handler(addr)
-                    await client.start_notify(_MESH_CHAR_UUID, handler)
-                    connected_clients[addr] = client
-                    log.info("[BLE] Subscribed to notifications from %s", name)
-
-                except BleakError as e:
-                    log.error("[BLE] Connect error (%s): %s", addr, e)
-                except Exception as e:
-                    log.error("[BLE] Unexpected connect error (%s): %s", addr, e)
-
-            # Clean up disconnected clients so they get re-scanned next pass
-            to_remove = [a for a, c in connected_clients.items() if not c.is_connected]
-            for addr in to_remove:
-                log.info("[BLE] %s disconnected — will re-scan", addr)
-                del connected_clients[addr]
-
-            await asyncio.sleep(BLE_SCAN_INTERVAL)
-
-        except Exception as e:
-            log.error("[BLE] Loop error: %s", e)
-            await asyncio.sleep(2)
     asyncio.run(ble_loop())
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# LORA LISTENER (SX1276 SPI on RPi4)
-# ══════════════════════════════════════════════════════════════════════════════
-
-_REG_FIFO          = 0x00
-_REG_OP_MODE       = 0x01
-_REG_FR_MSB        = 0x06
-_REG_FR_MID        = 0x07
-_REG_FR_LSB        = 0x08
-_REG_IRQ_FLAGS     = 0x12
-_REG_RX_NB_BYTES   = 0x13
-_REG_PKT_RSSI      = 0x1A
-_REG_FIFO_ADDR_PTR = 0x0D
-_REG_FIFO_RX_BASE  = 0x0F
-_REG_FIFO_RX_CURR  = 0x10
-_REG_SYNC_WORD     = 0x39
-_REG_VERSION       = 0x42
-_MODE_SLEEP        = 0x00
-_MODE_STDBY        = 0x01
-_MODE_RXCONT       = 0x05
-_MODE_LONG_RANGE   = 0x80
-
-lora_spi  = None
-lora_gpio = None
-lora_ok   = False
-
-
-def lora_write(reg, val):
-    lora_gpio.output(LORA_CS_PIN, lora_gpio.LOW)
-    lora_spi.xfer2([reg | 0x80, val])
-    lora_gpio.output(LORA_CS_PIN, lora_gpio.HIGH)
-
-
-def lora_read(reg):
-    lora_gpio.output(LORA_CS_PIN, lora_gpio.LOW)
-    result = lora_spi.xfer2([reg & 0x7F, 0x00])
-    lora_gpio.output(LORA_CS_PIN, lora_gpio.HIGH)
-    return result[1]
-
-
-def lora_setup():
-    global lora_spi, lora_gpio, lora_ok
-    try:
-        import spidev
-        import RPi.GPIO as GPIO
-
-        lora_gpio = GPIO
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(LORA_CS_PIN,  GPIO.OUT)
-        GPIO.setup(LORA_RST_PIN, GPIO.OUT)
-
-        lora_spi = spidev.SpiDev()
-        lora_spi.open(LORA_SPI_BUS, LORA_SPI_DEVICE)
-        lora_spi.max_speed_hz = 1_000_000
-
-        # Longer reset pulse for reliability
-        GPIO.output(LORA_RST_PIN, GPIO.LOW);  time.sleep(0.1)
-        GPIO.output(LORA_RST_PIN, GPIO.HIGH); time.sleep(0.1)
-
-        version = lora_read(_REG_VERSION)
-        if version != 0x12:
-            log.warning("[LoRa] Version %s unexpected — check wiring", hex(version))
-            return False
-
-        lora_write(_REG_OP_MODE, _MODE_LONG_RANGE | _MODE_SLEEP); time.sleep(0.01)
-
-        frf = int((LORA_FREQ * 1_000_000) / 61.035)
-        lora_write(_REG_FR_MSB, (frf >> 16) & 0xFF)
-        lora_write(_REG_FR_MID, (frf >>  8) & 0xFF)
-        lora_write(_REG_FR_LSB,  frf        & 0xFF)
-
-        lora_write(_REG_SYNC_WORD,     0x12)
-        lora_write(_REG_FIFO_RX_BASE,  0x00)
-        lora_write(_REG_FIFO_ADDR_PTR, 0x00)
-        lora_write(_REG_OP_MODE, _MODE_LONG_RANGE | _MODE_RXCONT)
-
-        lora_ok = True
-        log.info("[LoRa] Initialised at %d MHz", LORA_FREQ)
-        return True
-
-    except ImportError:
-        log.warning("[LoRa] spidev/RPi.GPIO not installed — skipping LoRa listener")
-        return False
-    except Exception as e:
-        log.error("[LoRa] Setup failed: %s", e)
-        return False
-
-
-def lora_listener():
-    if not lora_ok:
-        return
-    log.info("[LoRa] Listener polling...")
-    while True:
-        try:
-            irq = lora_read(_REG_IRQ_FLAGS)
-            if irq & 0x40:   # RxDone bit
-                lora_write(_REG_IRQ_FLAGS, 0xFF)
-                nb   = lora_read(_REG_RX_NB_BYTES)
-                addr = lora_read(_REG_FIFO_RX_CURR)
-                lora_write(_REG_FIFO_ADDR_PTR, addr)
-                data = bytearray()
-                for _ in range(nb):
-                    data.append(lora_read(_REG_FIFO))
-                rssi = lora_read(_REG_PKT_RSSI) - 157
-                try:
-                    msg = json.loads(data.decode("utf-8", "ignore"))
-                    msg["rssi"] = rssi
-                    process_packet(msg, f"LoRa RSSI={rssi}")
-                except Exception as e:
-                    log.error("[LoRa] Parse error: %s", e)
-        except Exception as e:
-            log.error("[LoRa] Poll error: %s", e)
-        time.sleep(0.05)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -451,7 +255,7 @@ app = Flask(__name__)
 
 @app.route("/api/stats")
 def api_stats():
-    """Live in-memory stats for all 3 protocols."""
+    """Live in-memory stats for WiFi and BLE protocols."""
     with stats_lock:
         result     = {}
         best_proto = None
@@ -463,7 +267,7 @@ def api_stats():
             loss = (lost / (rx + lost) * 100) if (rx + lost) > 0 else 0.0
             avg  = (s["total_latency"] / rx)  if rx > 0 else 0
             rssi = (s["rssi_sum"] / rx)        if rx > 0 else 0
-            power = {"wifi": 1, "ble": 2, "lora": 3}[proto]
+            power = {"wifi": 1, "ble": 2}[proto]
             cost  = (0.5 * avg) + (30 * loss) + (10 * power)
 
             result[proto] = {
@@ -493,11 +297,6 @@ def api_stats():
 def main():
     threading.Thread(target=wifi_listener, daemon=True).start()
     threading.Thread(target=ble_listener,  daemon=True).start()
-
-    if lora_setup():
-        threading.Thread(target=lora_listener, daemon=True).start()
-    else:
-        log.warning("[LoRa] Disabled — check wiring or SPI config")
 
     log.info("=" * 55)
     log.info(" IoT Mesh Gateway  —  Raspberry Pi 4")

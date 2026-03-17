@@ -1,20 +1,12 @@
 """
 py_nodes/mesh_node/mesh_node.py
 Mesh Node for Maker Pi Pico W
-Runs WiFi + BLE + LoRa simultaneously.
-- Broadcasts Hello on all 3 protocols to discover neighbours
+Runs WiFi + BLE simultaneously.
+- Broadcasts Hello on both protocols to discover neighbours
 - Sends data packets using best protocol from routing table
-- Listens for incoming packets on all 3 protocols
+- Listens for incoming packets on both protocols
 - Forwards packets toward gateway using cost function
 - Same file flashed on every Pico W, just change NODE_ID
-
-Wiring for LoRa SPI module (SX1276/RFM95):
-  LoRa SCK  → GP18
-  LoRa MOSI → GP19
-  LoRa MISO → GP16
-  LoRa CS   → GP17
-  LoRa RST  → GP14
-  LoRa IRQ  → GP15
 
 Fixes applied:
   - BLE IRQ handler no longer calls ble.gap_advertise() directly (caused OSError ENODEV crash)
@@ -30,7 +22,7 @@ import _thread
 import utime
 import sys
 import bluetooth
-from machine import Pin, SPI
+from machine import Pin
 
 sys.path.append('/CommonNodeCode')
 from metrics import Metrics
@@ -46,7 +38,6 @@ GATEWAY_ID       = 0xFF        # Reserved for gateway
 
 PROTOCOL_WIFI    = 2
 PROTOCOL_BLE     = 1
-PROTOCOL_LORA    = 3
 
 # WiFi
 BROADCAST_IP     = "255.255.255.255"
@@ -62,14 +53,10 @@ BLE_NAME         = f"MeshNode_{NODE_ID:#04x}"
 _MESH_SVC_UUID   = bluetooth.UUID(0xFEAA)
 _MESH_CHAR_UUID  = bluetooth.UUID(0x2A56)
 
-# LoRa SPI pins (SX1276/RFM95)
-LORA_SCK         = 18
-LORA_MOSI        = 19
-LORA_MISO        = 16
-LORA_CS          = 17
-LORA_RST         = 14
-LORA_DIO0        = 15
-LORA_FREQ        = 923      # MHz — 915-928 MHz for SG/AU region
+# BLE
+BLE_NAME         = f"MeshNode_{NODE_ID:#04x}"
+_MESH_SVC_UUID   = bluetooth.UUID(0xFEAA)
+_MESH_CHAR_UUID  = bluetooth.UUID(0x2A56)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -194,15 +181,14 @@ def send_data():
     """
     best_hop = routing_table.select_best_next_hop()
 
-    # No known neighbours yet — flood all protocols to bootstrap discovery.
+    # No known neighbours yet — flood WiFi + BLE to bootstrap discovery.
     # Once we receive an ACK, the gateway gets registered and we switch to
     # single-protocol targeted sends.
     if best_hop is None or best_hop == 0xFF:
-        print("[Node] No known neighbours — flooding all protocols")
+        print("[Node] No known neighbours — flooding WiFi + BLE")
         if my_ip:
             wifi_send_to_gateway()
         ble_send_to_gateway()
-        lora_send_to_gateway()
         return
 
     entry    = routing_table.entries.get(best_hop)
@@ -233,10 +219,6 @@ def send_data():
             except Exception as e:
                 print(f"[BLE] Notify error: {e}")
                 _ble_connections.pop(conn_handle, None)
-
-    elif protocol == PROTOCOL_LORA:
-        lora_send(payload)
-        print(f"[LoRa] Data seq={pkt.seq_num} → {best_hop:#04x} (next hop)")
 
 
 def forward_packet(msg: dict):
@@ -274,10 +256,6 @@ def forward_packet(msg: dict):
                 print(f"[Route] WiFi forward seq={msg.get('seq_num')} → {best_hop:#04x} ({hop_ip})")
             except OSError as e:
                 print(f"[Route] WiFi forward error: {e}")
-
-    elif protocol == PROTOCOL_LORA:
-        lora_send(payload)
-        print(f"[Route] LoRa forward seq={msg.get('seq_num')} → {best_hop:#04x}")
 
     elif protocol == PROTOCOL_BLE:
         ble_send(payload, best_hop)
@@ -520,173 +498,6 @@ def ble_send_to_gateway():
             _ble_connections.pop(conn_handle, None)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# LORA (SX1276 via SPI)
-# ══════════════════════════════════════════════════════════════════════════════
-
-_REG_FIFO          = 0x00
-_REG_OP_MODE       = 0x01
-_REG_FR_MSB        = 0x06
-_REG_FR_MID        = 0x07
-_REG_FR_LSB        = 0x08
-_REG_PA_CONFIG     = 0x09
-_REG_FIFO_ADDR_PTR = 0x0D
-_REG_FIFO_TX_BASE  = 0x0E
-_REG_FIFO_RX_BASE  = 0x0F
-_REG_FIFO_RX_CURR  = 0x10
-_REG_IRQ_FLAGS     = 0x12
-_REG_RX_NB_BYTES   = 0x13
-_REG_PKT_RSSI      = 0x1A
-_REG_PAYLOAD_LEN   = 0x22
-_REG_MODEM_CONFIG1 = 0x1D
-_REG_MODEM_CONFIG2 = 0x1E
-_REG_SYNC_WORD     = 0x39
-_REG_DIO_MAPPING1  = 0x40
-_REG_VERSION       = 0x42
-
-_MODE_SLEEP      = 0x00
-_MODE_STDBY      = 0x01
-_MODE_TX         = 0x03
-_MODE_RXCONT     = 0x05
-_MODE_LONG_RANGE = 0x80
-
-lora_spi = None
-lora_cs  = None
-lora_rst = None
-lora_ok  = False
-
-
-def _lora_write(reg, val):
-    lora_cs.value(0)
-    lora_spi.write(bytes([reg | 0x80, val]))
-    lora_cs.value(1)
-
-
-def _lora_read(reg):
-    lora_cs.value(0)
-    lora_spi.write(bytes([reg & 0x7F]))
-    result = lora_spi.read(1)
-    lora_cs.value(1)
-    return result[0]
-
-
-def lora_setup():
-    global lora_spi, lora_cs, lora_rst, lora_ok
-    try:
-        lora_spi  = SPI(0, baudrate=1_000_000, polarity=0, phase=0,
-                        sck=Pin(LORA_SCK), mosi=Pin(LORA_MOSI), miso=Pin(LORA_MISO))
-        lora_cs   = Pin(LORA_CS,   Pin.OUT)
-        lora_rst  = Pin(LORA_RST,  Pin.OUT)
-        lora_dio0 = Pin(LORA_DIO0, Pin.IN)
-
-        lora_rst.value(0); time.sleep(0.1)
-        lora_rst.value(1); time.sleep(0.1)
-
-        version = _lora_read(_REG_VERSION)
-        if version != 0x12:
-            print(f"[LoRa] Unexpected version {version:#04x} — check wiring")
-            return False
-
-        _lora_write(_REG_OP_MODE, _MODE_LONG_RANGE | _MODE_SLEEP)
-        time.sleep(0.01)
-
-        frf = int((LORA_FREQ * 1_000_000) / 61.035)
-        _lora_write(_REG_FR_MSB, (frf >> 16) & 0xFF)
-        _lora_write(_REG_FR_MID, (frf >>  8) & 0xFF)
-        _lora_write(_REG_FR_LSB,  frf        & 0xFF)
-
-        _lora_write(_REG_PA_CONFIG, 0x8F)
-        _lora_write(_REG_SYNC_WORD, 0x12)
-        _lora_write(_REG_OP_MODE,   _MODE_LONG_RANGE | _MODE_STDBY)
-
-        lora_ok = True
-        print(f"[LoRa] Initialised at {LORA_FREQ} MHz")
-        return True
-
-    except Exception as e:
-        print(f"[LoRa] Setup failed: {e}")
-        return False
-
-
-def lora_send(payload: str):
-    if not lora_ok:
-        return
-    try:
-        data = payload.encode()[:255]
-        _lora_write(_REG_OP_MODE,       _MODE_LONG_RANGE | _MODE_STDBY)
-        _lora_write(_REG_FIFO_ADDR_PTR, 0x00)
-        _lora_write(_REG_FIFO_TX_BASE,  0x00)
-        _lora_write(_REG_FIFO_ADDR_PTR, 0x00)
-        for byte in data:
-            _lora_write(_REG_FIFO, byte)
-        _lora_write(_REG_PAYLOAD_LEN, len(data))
-        _lora_write(_REG_OP_MODE, _MODE_LONG_RANGE | _MODE_TX)
-        for _ in range(50):
-            if _lora_read(_REG_IRQ_FLAGS) & 0x08:
-                break
-            time.sleep(0.01)
-        _lora_write(_REG_IRQ_FLAGS, 0xFF)
-        _lora_write(_REG_OP_MODE,   _MODE_LONG_RANGE | _MODE_RXCONT)
-    except Exception as e:
-        print(f"[LoRa] Send error: {e}")
-
-
-def lora_receive():
-    """Check if a LoRa packet arrived. Returns string or None."""
-    if not lora_ok:
-        return None
-    try:
-        irq = _lora_read(_REG_IRQ_FLAGS)
-        if not (irq & 0x40):
-            return None
-        _lora_write(_REG_IRQ_FLAGS, 0xFF)
-        nb   = _lora_read(_REG_RX_NB_BYTES)
-        addr = _lora_read(_REG_FIFO_RX_CURR)
-        _lora_write(_REG_FIFO_ADDR_PTR, addr)
-        data = bytearray()
-        for _ in range(nb):
-            data.append(_lora_read(_REG_FIFO))
-        return data.decode("utf-8", "ignore")
-    except Exception as e:
-        print(f"[LoRa] Receive error: {e}")
-        return None
-
-
-def lora_broadcast_hello():
-    payload = build_hello_payload(PROTOCOL_LORA)
-    lora_send(payload)
-    print(f"[LoRa] Hello broadcast from {NODE_ID:#04x}")
-
-
-def lora_send_to_gateway():
-    pkt     = make_packet(GATEWAY_ID, PROTOCOL_LORA)
-    payload = build_data_payload(pkt)
-    lora_send(payload)
-    print(f"[LoRa] Data seq={pkt.seq_num} → Gateway")
-
-
-def lora_listener():
-    """Poll LoRa for incoming packets — runs in main loop."""
-    raw = lora_receive()
-    if not raw:
-        return
-    try:
-        msg = json.loads(raw)
-        if msg.get("type") == "HELLO":
-            nid = msg["node_id"]
-            routing_table.update_route(nid, 0, 0, 0.2, PROTOCOL_LORA)
-            print(f"[LoRa] Hello from {nid:#04x}")
-        elif msg.get("type") == "DATA":
-            handle_received_data(msg, "LoRa")
-        elif msg.get("type") == "ACK":
-            sent    = msg.get("send_time_ms", 0)
-            latency = utime.ticks_diff(utime.ticks_ms(), sent)
-            seq     = msg.get("seq_num", -1)
-            metrics.record_receive(seq)
-            print(f"[LoRa] ACK seq={seq}  latency={latency}ms")
-    except Exception as e:
-        print(f"[LoRa] Parse error: {e}")
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN
@@ -704,10 +515,6 @@ def main():
         print("[Node] WiFi listener started")
 
     ble_setup()   # FIX: no longer assigns return value; _ble_char_handle set inside
-
-    lora_setup()
-    if lora_ok:
-        _lora_write(_REG_OP_MODE, _MODE_LONG_RANGE | _MODE_RXCONT)
 
     print(f"[Node] All protocols initialised. Running...\n")
 
@@ -731,16 +538,12 @@ def main():
             if my_ip:
                 wifi_broadcast_hello(my_ip)
             ble_broadcast_hello()
-            lora_broadcast_hello()
             last_hello = now
 
         # Send data packet via best protocol
         if now - last_packet >= PACKET_INTERVAL:
             send_data()
             last_packet = now
-
-        # Poll LoRa for incoming packets
-        lora_listener()
 
         time.sleep(0.05)
 
