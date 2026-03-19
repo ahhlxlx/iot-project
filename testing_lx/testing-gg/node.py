@@ -31,10 +31,10 @@ from micropython import const
 # ══════════════════════════════════════════════
 #  ① NODE CONFIGURATION  ← edit per device
 # ══════════════════════════════════════════════
-NODE_ID        = "NODE_01"       # Change to NODE_02, NODE_03 … for each Pico W
-GATEWAY_IP     = "172.20.10.4"   # Raspberry Pi IP
-WIFI_SSID      = "lixuan"       # Shared WiFi network name
-WIFI_PASSWORD  = "testTest"   # Shared WiFi password
+NODE_ID        = "NODE_lx"       # Change to NODE_02, NODE_03 … for each Pico W
+GATEWAY_IP     = "10.200.176.43"   # Raspberry Pi IP
+WIFI_SSID      = "OnePlus13Equals14"       # Shared WiFi network name
+WIFI_PASSWORD  = "gkpm5847"   # Shared WiFi password
 
 # Cost function weights  (must sum to 1.0)
 W_LATENCY      = 0.5             # Higher = prioritise low latency
@@ -102,8 +102,16 @@ udp_sock     = None
 ble_obj      = None
 my_ip        = "0.0.0.0"
 
+# Protocol availability flags – set during startup, re-checked in main loop
+wifi_active  = False   # True once WiFi is connected and UDP socket is open
+ble_active   = False   # True once BLE is initialised
+
 # BLE receive buffer filled by IRQ, drained in main loop
 ble_rx_buffer = []
+
+# BLE print throttle: only print every BLE_PRINT_EVERY messages per node
+BLE_PRINT_EVERY = 10
+ble_recv_count  = {}   # { node_id: int }
 
 # Pending PING timestamps: { (node_id, protocol): sent_time }
 ping_pending = {}
@@ -118,7 +126,7 @@ last_ping_time   = 0
 # ══════════════════════════════════════════════
 
 def connect_wifi():
-    global wlan, my_ip
+    global wlan, my_ip, wifi_active
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
     wlan.connect(WIFI_SSID, WIFI_PASSWORD)
@@ -129,17 +137,50 @@ def connect_wifi():
         time.sleep(1)
     if wlan.isconnected():
         my_ip = wlan.ifconfig()[0]
+        wifi_active = True
         print(f"[WiFi] Connected  IP={my_ip}")
         return True
-    print("[WiFi] FAILED – check SSID / password")
+    wifi_active = False
+    print("[WiFi] FAILED – running in BLE-only mode")
     return False
 
 
 def wifi_rssi():
     try:
-        return wlan.status('rssi')
+        if wifi_active and wlan and wlan.isconnected():
+            return wlan.status('rssi')
     except Exception:
-        return -99
+        pass
+    return -99
+
+
+def check_wifi_reconnect():
+    """
+    Non-blocking WiFi reconnect attempt.
+    Just calls connect() and checks status immediately —
+    the actual connection happens in the background.
+    BLE operation is NOT paused during this call.
+    """
+    global wifi_active, udp_sock, my_ip
+    if wifi_active and wlan and wlan.isconnected():
+        return  # all good
+
+    # If already trying to connect, just check if it succeeded
+    if wlan and wlan.isconnected():
+        my_ip = wlan.ifconfig()[0]
+        wifi_active = True
+        if udp_sock is None:
+            setup_udp()
+        print(f"[WiFi] Reconnected  IP={my_ip}")
+        return
+
+    # Trigger a new connection attempt (non-blocking — returns immediately)
+    try:
+        print("[WiFi] Attempting reconnect (background)...")
+        wlan.connect(WIFI_SSID, WIFI_PASSWORD)
+        # Don't wait here — result checked on next retry cycle
+    except Exception as e:
+        print(f"[WiFi] Reconnect trigger error: {e}")
 
 
 # ══════════════════════════════════════════════
@@ -148,14 +189,23 @@ def wifi_rssi():
 
 def setup_udp():
     global udp_sock
-    udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    udp_sock.bind(("0.0.0.0", UDP_MESH_PORT))
-    udp_sock.setblocking(False)
-    print(f"[UDP]  Listening on port {UDP_MESH_PORT}")
+    if not wifi_active:
+        print("[UDP]  Skipped – no WiFi")
+        return
+    try:
+        udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        udp_sock.bind(("0.0.0.0", UDP_MESH_PORT))
+        udp_sock.setblocking(False)
+        print(f"[UDP]  Listening on port {UDP_MESH_PORT}")
+    except Exception as e:
+        print(f"[UDP]  Setup failed: {e}")
+        udp_sock = None
 
 
 def udp_send(ip, port, obj):
+    if not wifi_active or udp_sock is None:
+        return False
     try:
         udp_sock.sendto(json.dumps(obj).encode(), (ip, port))
         return True
@@ -165,6 +215,8 @@ def udp_send(ip, port, obj):
 
 
 def udp_broadcast(port, obj):
+    if not wifi_active or udp_sock is None:
+        return False
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -243,6 +295,18 @@ def find_manuf_data(adv_data):
     return None
 
 
+def valid_node_id(node_id):
+    """
+    Accept only node IDs matching our format: NODE_XX (7 chars max).
+    Rejects rogue devices, junk BLE advertisers, or malformed packets.
+    """
+    if not node_id or len(node_id) > 7:
+        return False
+    if not node_id.startswith("NODE_"):
+        return False
+    return True
+
+
 # ══════════════════════════════════════════════
 #  BLE IRQ  (hardware interrupt – keep minimal)
 # ══════════════════════════════════════════════
@@ -254,7 +318,7 @@ def ble_irq(event, data):
         manuf = find_manuf_data(adv_data)
         if manuf and len(manuf) >= 19:
             decoded = decode_ble(manuf)
-            if decoded and decoded["node_id"] and decoded["node_id"] != NODE_ID:
+            if decoded and decoded["node_id"] and decoded["node_id"] != NODE_ID and valid_node_id(decoded["node_id"]):
                 decoded["adv_rssi"] = rssi  # RSSI as measured by our radio
                 ble_rx_buffer.append(decoded)
 
@@ -264,20 +328,22 @@ def ble_irq(event, data):
 # ══════════════════════════════════════════════
 
 def setup_ble():
-    global ble_obj
+    global ble_obj, ble_active
     try:
         ble_obj = ubluetooth.BLE()
         ble_obj.active(True)
         ble_obj.irq(ble_irq)
         ble_obj.gap_scan(0, 100_000, 50_000, False)  # continuous passive scan
+        ble_active = True
         print("[BLE]  Scanning started")
     except Exception as e:
         print(f"[BLE]  Setup failed: {e}")
-        ble_obj = None
+        ble_obj    = None
+        ble_active = False
 
 
 def ble_advertise(pkt_type, seq_hop, ts, rssi, lat_ms, loss_pct):
-    if ble_obj is None:
+    if not ble_active or ble_obj is None:
         return
     try:
         payload = encode_ble(pkt_type, seq_hop, ts, rssi, lat_ms, loss_pct)
@@ -423,6 +489,8 @@ def learn_indirect_routes(sender_id, sender_routing, my_cost_to_sender):
     for dest, info in sender_routing.items():
         if dest == NODE_ID:
             continue
+        if not valid_node_id(dest):
+            continue   # reject rogue / foreign node IDs from other teams
         their_cost  = info.get("cost", 9999)
         new_hops    = info.get("hop_count", 99) + 1
         new_lat     = info.get("avg_latency_ms", 9999) + avg_latency(sender_id, "WiFi")
@@ -593,12 +661,16 @@ def send_metrics():
     w_losses = [lnk["packet_loss"] for (_, p), lnk in link_stats.items() if p == "WiFi"]
     b_losses = [lnk["packet_loss"] for (_, p), lnk in link_stats.items() if p == "BLE"]
     b_rssies = [lnk["rssi"]        for (_, p), lnk in link_stats.items() if p == "BLE"]
+    w_powers   = [lnk["power_cost"] for (_, p), lnk in link_stats.items() if p == "WiFi"]
+    b_powers   = [lnk["power_cost"] for (_, p), lnk in link_stats.items() if p == "BLE"]
 
     avg_w_lat  = sum(w_lats)   / len(w_lats)   if w_lats   else 0.0
     avg_b_lat  = sum(b_lats)   / len(b_lats)   if b_lats   else 0.0
     avg_w_loss = sum(w_losses) / len(w_losses) if w_losses else 0.0
     avg_b_loss = sum(b_losses) / len(b_losses) if b_losses else 0.0
     avg_b_rssi = sum(b_rssies) / len(b_rssies) if b_rssies else -99
+    avg_w_power = sum(w_powers) / len(w_powers) if w_powers else 0.5
+    avg_b_power = sum(b_powers) / len(b_powers) if b_powers else 0.5
 
     # Full routing snapshot
     rt_snapshot = {}
@@ -628,6 +700,8 @@ def send_metrics():
         "ip"           : my_ip,
         "neighbours"   : list(set(n for (n, _) in link_stats.keys())),
         "routing_table": rt_snapshot,
+        "route_mode"   : current_route_mode,
+        "weights"      : {"w_latency": W_LATENCY, "w_packet_loss": W_PACKET_LOSS, "w_power": W_POWER},
         "metrics": {
             "wifi_avg_latency_ms": round(avg_w_lat, 2),
             "ble_avg_latency_ms" : round(avg_b_lat, 2),
@@ -635,6 +709,8 @@ def send_metrics():
             "ble_packet_loss"    : round(avg_b_loss, 4),
             "wifi_rssi"          : rssi,
             "ble_rssi"           : round(avg_b_rssi, 1),
+            "wifi_power_cost"    : round(avg_w_power, 4),
+            "ble_power_cost"     : round(avg_b_power, 4),
         }
     }
     ok = udp_send(GATEWAY_IP, UDP_GW_PORT, wifi_pkt)
@@ -647,11 +723,44 @@ def send_metrics():
     ble_advertise(BLE_PKT_TYPE_METRIC, seq_number & 0xFF,
                   ts, rssi, avg_b_lat, avg_b_loss)
 
-    print(f"[Metric] WiFi seq={seq_number} rssi={rssi}dBm  |  "
-          f"BLE seq={seq_number & 0xFF} lat={avg_b_lat:.1f}ms")
+    active = ("WiFi+" if wifi_active else "") + ("BLE" if ble_active else "")
+    print(f"[Metric] [{active}] seq={seq_number} wifi_rssi={rssi}dBm  |  "
+          f"ble_lat={avg_b_lat:.1f}ms")
 
     # ── 3. Print routing decision ─────────────────────────────────
     print_routing_table()
+
+
+# ══════════════════════════════════════════════
+#  ROUTE PREFERENCE  (remote weight adjustment)
+# ══════════════════════════════════════════════
+
+# Current preference mode (for reporting back to gateway)
+current_route_mode = "balanced"
+
+def apply_route_preference(pkt):
+    """
+    Adjust the cost function weights based on a command from the gateway/dashboard.
+    This lets the user pick what to optimise for: latency, cost (reliability), or power.
+    """
+    global W_LATENCY, W_PACKET_LOSS, W_POWER, current_route_mode
+    new_wl = pkt.get("w_latency")
+    new_wp = pkt.get("w_packet_loss")
+    new_pw = pkt.get("w_power")
+    mode   = pkt.get("mode", "balanced")
+
+    if new_wl is not None and new_wp is not None and new_pw is not None:
+        W_LATENCY     = float(new_wl)
+        W_PACKET_LOSS = float(new_wp)
+        W_POWER       = float(new_pw)
+        current_route_mode = mode
+        # Immediately rebuild routing table with new weights
+        rebuild_routing_table()
+        print(f"[RoutePref] ✅ Weights updated: mode={mode}  "
+              f"W_LAT={W_LATENCY:.2f}  W_LOSS={W_PACKET_LOSS:.2f}  W_PWR={W_POWER:.2f}")
+        print_routing_table()
+    else:
+        print(f"[RoutePref] ⚠ Invalid weight packet: {pkt}")
 
 
 # ══════════════════════════════════════════════
@@ -671,8 +780,8 @@ def process_wifi_packets():
 
             ptype   = pkt.get("type")
             node_id = pkt.get("node_id", "")
-            if node_id == NODE_ID:
-                continue   # ignore our own reflections
+            if node_id == NODE_ID or not valid_node_id(node_id):
+                continue   # ignore our own reflections and rogue nodes
 
             if ptype == "HELLO":
                 lat_ms = max(0.0, (recv_ts - pkt.get("timestamp", recv_ts)) * 1000)
@@ -705,10 +814,9 @@ def process_wifi_packets():
                     ping_ts = pkt.get("ping_ts", 0)
                     rtt_ms  = (recv_ts - ping_ts) * 1000 if ping_ts else 0
                 rtt_ms = float(rtt_ms)
-                # Discard stale PONGs (> PING_INTERVAL means it's from a previous cycle)
-                # and sanity-cap at 500ms – anything above is a fluke on a local network
-                if rtt_ms < 0 or rtt_ms > 500:
-                    print(f"[PONG] {node_id} discarding stale/invalid RTT={rtt_ms:.0f}ms")
+                # Discard stale PONGs: cap at 400ms on a local network.
+                # Silently drop rather than printing to reduce console noise.
+                if rtt_ms < 0 or rtt_ms > 400:
                     ping_pending.pop((node_id, "WiFi"), None)
                     continue
                 record_latency(node_id, "WiFi", rtt_ms, pkt.get("rssi", wifi_rssi()))
@@ -732,6 +840,12 @@ def process_wifi_packets():
                     udp_send(GATEWAY_IP, UDP_GW_PORT, pkt)
                     print(f"[Relay] Forwarded METRIC from {node_id} hop={hop}")
 
+            elif ptype == "ROUTE_PREF":
+                # Gateway sent new routing preference weights
+                target = pkt.get("target", "")
+                if target == NODE_ID:
+                    apply_route_preference(pkt)
+
     except OSError:
         pass  # No data available – normal for non-blocking socket
 
@@ -739,6 +853,11 @@ def process_wifi_packets():
 # ══════════════════════════════════════════════
 #  PROCESS BLE RECEIVE BUFFER
 # ══════════════════════════════════════════════
+
+# Print BLE messages only every Nth packet per node to reduce spam
+# e.g. BLE_PRINT_EVERY = 10 means 1 print per ~1 second (BLE fires ~10x/sec)
+BLE_PRINT_EVERY = 10
+_ble_recv_count = {}   # { node_id: count }
 
 def process_ble_buffer():
     while ble_rx_buffer:
@@ -763,9 +882,46 @@ def process_ble_buffer():
             if pkt_type == BLE_PKT_TYPE_METRIC:
                 lnk["recv_count"] += 1
                 lnk["packet_loss"] = loss
+
+                # ── BLE-to-WiFi relay ──────────────────────────────────
+                # If WE have WiFi and the sender only has BLE (no WiFi
+                # link seen for them), forward a metric packet to the
+                # gateway on their behalf so they appear in the Health Matrix.
+                sender_has_wifi = get_link(node_id, "WiFi")["last_seen"] > 0
+                if wifi_active and not sender_has_wifi:
+                    relay_pkt = {
+                        "type"        : "METRIC",
+                        "node_id"     : node_id,       # original sender's ID
+                        "protocol"    : "BLE",          # flag as BLE-sourced
+                        "timestamp"   : now,
+                        "seq_number"  : decoded.get("seq_hop", 0),
+                        "hop_count"   : 1,
+                        "rssi"        : adv_rssi,       # BLE RSSI we measured
+                        "ip"          : "BLE-only",
+                        "relayed_by"  : NODE_ID,        # us
+                        "neighbours"  : [NODE_ID],
+                        "routing_table": {},
+                        "metrics": {
+                            "wifi_avg_latency_ms": 0,
+                            "ble_avg_latency_ms" : lat_ms,
+                            "wifi_packet_loss"   : 1.0,   # no WiFi = 100% WiFi loss
+                            "ble_packet_loss"    : loss,
+                            "wifi_rssi"          : -99,
+                            "ble_rssi"           : adv_rssi,
+                            "wifi_power_cost"    : 1.0,
+                            "ble_power_cost"     : min(1.0, max(0.05, (-adv_rssi - 50) / 40.0)),
+                        }
+                    }
+                    ok = udp_send(GATEWAY_IP, UDP_GW_PORT, relay_pkt)
+                    if ok:
+                        print(f"[Relay] BLE→WiFi: forwarded {node_id} metric to gateway")
+
             rebuild_routing_table()
-            label = "Hello" if pkt_type == BLE_PKT_TYPE_HELLO else "Metric"
-            print(f"[BLE]  {label} from {node_id}  RSSI={adv_rssi}dBm  lat={lat_ms:.1f}ms")
+            # Throttle: only print every BLE_PRINT_EVERY messages per node
+            _ble_recv_count[node_id] = _ble_recv_count.get(node_id, 0) + 1
+            if _ble_recv_count[node_id] % BLE_PRINT_EVERY == 1:
+                label = "Hello" if pkt_type == BLE_PKT_TYPE_HELLO else "Metric"
+                print(f"[BLE]  {label} from {node_id}  RSSI={adv_rssi}dBm  (#{_ble_recv_count[node_id]})")
 
         elif pkt_type == BLE_PKT_TYPE_PING:
             # Sender pinged via BLE adv – respond via WiFi with BLE RSSI included
@@ -788,28 +944,60 @@ def process_ble_buffer():
 
 def main():
     global last_hello_time, last_metric_time, last_ping_time
+    global wifi_active, ble_active, my_ip, udp_sock
 
     print("╔══════════════════════════════════════════╗")
     print(f"║  Mesh Node  {NODE_ID:<8}  (Pico W)      ║")
     print("║  Dual-Protocol: WiFi + BLE               ║")
     print("╚══════════════════════════════════════════╝")
 
-    if not connect_wifi():
-        print("[FATAL] WiFi failed. Cannot start.")
-        return
+    # ── Try WiFi (non-fatal if it fails) ────────────────────────
+    connect_wifi()
+    if wifi_active:
+        setup_udp()
+    else:
+        print("[Node] WiFi unavailable – starting in BLE-only mode")
 
-    setup_udp()
+    # ── Start BLE (non-fatal if it fails) ───────────────────────
     setup_ble()
 
-    print(f"\n[Node] {NODE_ID} ready  IP={my_ip}")
-    print("[Node] Both WiFi and BLE active – starting mesh...\n")
+    if not wifi_active and not ble_active:
+        print("[FATAL] Both WiFi and BLE unavailable. Cannot start.")
+        return
 
-    last_hello_time  = 0
-    last_metric_time = 0
-    last_ping_time   = 0
+    # ── Report active protocols ──────────────────────────────────
+    active = []
+    if wifi_active: active.append(f"WiFi ({my_ip})")
+    if ble_active:  active.append("BLE")
+    print(f"\n[Node] {NODE_ID} ready  –  Active: {' + '.join(active)}\n")
+
+    last_hello_time   = 0
+    last_metric_time  = 0
+    last_ping_time    = 0
+    last_wifi_retry   = 0
+    last_wifi_check   = 0
+    WIFI_RETRY_INTERVAL = 60   # trigger a new reconnect attempt every 60s
+    WIFI_CHECK_INTERVAL = 5    # check if background connect succeeded every 5s
 
     while True:
         now = time.time()
+
+        # ── WiFi background reconnect logic ──────────────────────
+        if not wifi_active:
+            # Every 5s: check if the background connect attempt succeeded
+            if now - last_wifi_check >= WIFI_CHECK_INTERVAL:
+                if wlan and wlan.isconnected():
+                    my_ip = wlan.ifconfig()[0]
+                    wifi_active = True
+                    if udp_sock is None:
+                        setup_udp()
+                    print(f"[WiFi] Connected  IP={my_ip}")
+                last_wifi_check = now
+
+            # Every 60s: trigger a fresh reconnect attempt (non-blocking)
+            if now - last_wifi_retry >= WIFI_RETRY_INTERVAL:
+                check_wifi_reconnect()
+                last_wifi_retry = now
 
         # A. Neighbour Discovery (Hello over WiFi + BLE)
         if now - last_hello_time >= HELLO_INTERVAL:
@@ -827,13 +1015,15 @@ def main():
             send_metrics()
             last_metric_time = now
 
-        # D. Receive and process incoming WiFi packets
-        process_wifi_packets()
+        # D. Receive and process incoming WiFi packets (skipped if no WiFi)
+        if wifi_active and udp_sock is not None:
+            process_wifi_packets()
 
-        # E. Process BLE scan results from IRQ buffer
-        process_ble_buffer()
+        # E. Process BLE scan results from IRQ buffer (skipped if no BLE)
+        if ble_active:
+            process_ble_buffer()
 
-        time.sleep(0.05)   # 50ms poll loop
+        time.sleep(0.05)
 
 
 # ══════════════════════════════════════════════
