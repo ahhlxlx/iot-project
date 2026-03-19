@@ -31,9 +31,9 @@ from micropython import const
 # ══════════════════════════════════════════════
 #  ① NODE CONFIGURATION  ← edit per device
 # ══════════════════════════════════════════════
-NODE_ID        = "NODE_lx"       # Change to NODE_02, NODE_03 … for each Pico W
+NODE_ID        = "NODE_01"       # Change to NODE_02, NODE_03 … for each Pico W
 GATEWAY_IP     = "10.200.176.43"   # Raspberry Pi IP
-WIFI_SSID      = "OnePlus13Equals14gg"       # Shared WiFi network name
+WIFI_SSID      = "OnePlus13Equals14"       # Shared WiFi network name
 WIFI_PASSWORD  = "gkpm5847"   # Shared WiFi password
 
 # Cost function weights  (must sum to 1.0)
@@ -156,34 +156,31 @@ def wifi_rssi():
 
 def check_wifi_reconnect():
     """
-    Called periodically in the main loop.
-    If WiFi was lost, try to reconnect silently.
-    If WiFi was never available, try once to join.
+    Non-blocking WiFi reconnect attempt.
+    Just calls connect() and checks status immediately —
+    the actual connection happens in the background.
+    BLE operation is NOT paused during this call.
     """
     global wifi_active, udp_sock, my_ip
     if wifi_active and wlan and wlan.isconnected():
         return  # all good
-    # WiFi dropped or was never up — attempt reconnect
-    print("[WiFi] Connection lost – attempting reconnect...")
+
+    # If already trying to connect, just check if it succeeded
+    if wlan and wlan.isconnected():
+        my_ip = wlan.ifconfig()[0]
+        wifi_active = True
+        if udp_sock is None:
+            setup_udp()
+        print(f"[WiFi] Reconnected  IP={my_ip}")
+        return
+
+    # Trigger a new connection attempt (non-blocking — returns immediately)
     try:
+        print("[WiFi] Attempting reconnect (background)...")
         wlan.connect(WIFI_SSID, WIFI_PASSWORD)
-        for _ in range(10):
-            if wlan.isconnected():
-                break
-            time.sleep(1)
-        if wlan.isconnected():
-            my_ip = wlan.ifconfig()[0]
-            wifi_active = True
-            # Reopen UDP socket if it was closed
-            if udp_sock is None:
-                setup_udp()
-            print(f"[WiFi] Reconnected  IP={my_ip}")
-        else:
-            wifi_active = False
-            print("[WiFi] Reconnect failed – staying in BLE-only mode")
+        # Don't wait here — result checked on next retry cycle
     except Exception as e:
-        wifi_active = False
-        print(f"[WiFi] Reconnect error: {e}")
+        print(f"[WiFi] Reconnect trigger error: {e}")
 
 
 # ══════════════════════════════════════════════
@@ -839,6 +836,38 @@ def process_ble_buffer():
             if pkt_type == BLE_PKT_TYPE_METRIC:
                 lnk["recv_count"] += 1
                 lnk["packet_loss"] = loss
+
+                # ── BLE-to-WiFi relay ──────────────────────────────────
+                # If WE have WiFi and the sender only has BLE (no WiFi
+                # link seen for them), forward a metric packet to the
+                # gateway on their behalf so they appear in the Health Matrix.
+                sender_has_wifi = get_link(node_id, "WiFi")["last_seen"] > 0
+                if wifi_active and not sender_has_wifi:
+                    relay_pkt = {
+                        "type"        : "METRIC",
+                        "node_id"     : node_id,       # original sender's ID
+                        "protocol"    : "BLE",          # flag as BLE-sourced
+                        "timestamp"   : now,
+                        "seq_number"  : decoded.get("seq_hop", 0),
+                        "hop_count"   : 1,
+                        "rssi"        : adv_rssi,       # BLE RSSI we measured
+                        "ip"          : "BLE-only",
+                        "relayed_by"  : NODE_ID,        # us
+                        "neighbours"  : [NODE_ID],
+                        "routing_table": {},
+                        "metrics": {
+                            "wifi_avg_latency_ms": 0,
+                            "ble_avg_latency_ms" : lat_ms,
+                            "wifi_packet_loss"   : 1.0,   # no WiFi = 100% WiFi loss
+                            "ble_packet_loss"    : loss,
+                            "wifi_rssi"          : -99,
+                            "ble_rssi"           : adv_rssi,
+                        }
+                    }
+                    ok = udp_send(GATEWAY_IP, UDP_GW_PORT, relay_pkt)
+                    if ok:
+                        print(f"[Relay] BLE→WiFi: forwarded {node_id} metric to gateway")
+
             rebuild_routing_table()
             # Throttle: only print every BLE_PRINT_EVERY messages per node
             _ble_recv_count[node_id] = _ble_recv_count.get(node_id, 0) + 1
@@ -897,17 +926,29 @@ def main():
     last_metric_time  = 0
     last_ping_time    = 0
     last_wifi_retry   = 0
-    WIFI_RETRY_INTERVAL = 30   # retry WiFi every 30s if disconnected
+    last_wifi_check   = 0
+    WIFI_RETRY_INTERVAL = 60   # trigger a new reconnect attempt every 60s
+    WIFI_CHECK_INTERVAL = 5    # check if background connect succeeded every 5s
 
     while True:
         now = time.time()
 
-        # ── Periodically retry WiFi if it's down ─────────────────
-        if not wifi_active and now - last_wifi_retry >= WIFI_RETRY_INTERVAL:
-            check_wifi_reconnect()
-            if wifi_active and udp_sock is None:
-                setup_udp()
-            last_wifi_retry = now
+        # ── WiFi background reconnect logic ──────────────────────
+        if not wifi_active:
+            # Every 5s: check if the background connect attempt succeeded
+            if now - last_wifi_check >= WIFI_CHECK_INTERVAL:
+                if wlan and wlan.isconnected():
+                    my_ip = wlan.ifconfig()[0]
+                    wifi_active = True
+                    if udp_sock is None:
+                        setup_udp()
+                    print(f"[WiFi] Connected  IP={my_ip}")
+                last_wifi_check = now
+
+            # Every 60s: trigger a fresh reconnect attempt (non-blocking)
+            if now - last_wifi_retry >= WIFI_RETRY_INTERVAL:
+                check_wifi_reconnect()
+                last_wifi_retry = now
 
         # A. Neighbour Discovery (Hello over WiFi + BLE)
         if now - last_hello_time >= HELLO_INTERVAL:
