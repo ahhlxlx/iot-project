@@ -32,9 +32,9 @@ from micropython import const
 #  ① NODE CONFIGURATION  ← edit per device
 # ══════════════════════════════════════════════
 NODE_ID        = "NODE_01"       # Change to NODE_02, NODE_03 … for each Pico W
-GATEWAY_IP     = "172.20.10.4"   # Raspberry Pi IP
-WIFI_SSID      = "lixuan"       # Shared WiFi network name
-WIFI_PASSWORD  = "testTest"   # Shared WiFi password
+GATEWAY_IP     = "10.200.176.43"   # Raspberry Pi IP
+WIFI_SSID      = "OnePlus13Equals14"       # Shared WiFi network name
+WIFI_PASSWORD  = "gkpm5847"   # Shared WiFi password
 
 # Cost function weights  (must sum to 1.0)
 W_LATENCY      = 0.5             # Higher = prioritise low latency
@@ -104,6 +104,10 @@ my_ip        = "0.0.0.0"
 
 # BLE receive buffer filled by IRQ, drained in main loop
 ble_rx_buffer = []
+
+# BLE print throttle: only print every BLE_PRINT_EVERY messages per node
+BLE_PRINT_EVERY = 10
+ble_recv_count  = {}   # { node_id: int }
 
 # Pending PING timestamps: { (node_id, protocol): sent_time }
 ping_pending = {}
@@ -243,6 +247,18 @@ def find_manuf_data(adv_data):
     return None
 
 
+def valid_node_id(node_id):
+    """
+    Accept only node IDs matching our format: NODE_XX (7 chars max).
+    Rejects rogue devices, junk BLE advertisers, or malformed packets.
+    """
+    if not node_id or len(node_id) > 7:
+        return False
+    if not node_id.startswith("NODE_"):
+        return False
+    return True
+
+
 # ══════════════════════════════════════════════
 #  BLE IRQ  (hardware interrupt – keep minimal)
 # ══════════════════════════════════════════════
@@ -254,7 +270,7 @@ def ble_irq(event, data):
         manuf = find_manuf_data(adv_data)
         if manuf and len(manuf) >= 19:
             decoded = decode_ble(manuf)
-            if decoded and decoded["node_id"] and decoded["node_id"] != NODE_ID:
+            if decoded and decoded["node_id"] and decoded["node_id"] != NODE_ID and valid_node_id(decoded["node_id"]):
                 decoded["adv_rssi"] = rssi  # RSSI as measured by our radio
                 ble_rx_buffer.append(decoded)
 
@@ -423,6 +439,8 @@ def learn_indirect_routes(sender_id, sender_routing, my_cost_to_sender):
     for dest, info in sender_routing.items():
         if dest == NODE_ID:
             continue
+        if not valid_node_id(dest):
+            continue   # reject rogue / foreign node IDs from other teams
         their_cost  = info.get("cost", 9999)
         new_hops    = info.get("hop_count", 99) + 1
         new_lat     = info.get("avg_latency_ms", 9999) + avg_latency(sender_id, "WiFi")
@@ -671,8 +689,8 @@ def process_wifi_packets():
 
             ptype   = pkt.get("type")
             node_id = pkt.get("node_id", "")
-            if node_id == NODE_ID:
-                continue   # ignore our own reflections
+            if node_id == NODE_ID or not valid_node_id(node_id):
+                continue   # ignore our own reflections and rogue nodes
 
             if ptype == "HELLO":
                 lat_ms = max(0.0, (recv_ts - pkt.get("timestamp", recv_ts)) * 1000)
@@ -705,10 +723,9 @@ def process_wifi_packets():
                     ping_ts = pkt.get("ping_ts", 0)
                     rtt_ms  = (recv_ts - ping_ts) * 1000 if ping_ts else 0
                 rtt_ms = float(rtt_ms)
-                # Discard stale PONGs (> PING_INTERVAL means it's from a previous cycle)
-                # and sanity-cap at 500ms – anything above is a fluke on a local network
-                if rtt_ms < 0 or rtt_ms > 500:
-                    print(f"[PONG] {node_id} discarding stale/invalid RTT={rtt_ms:.0f}ms")
+                # Discard stale PONGs: cap at 400ms on a local network.
+                # Silently drop rather than printing to reduce console noise.
+                if rtt_ms < 0 or rtt_ms > 400:
                     ping_pending.pop((node_id, "WiFi"), None)
                     continue
                 record_latency(node_id, "WiFi", rtt_ms, pkt.get("rssi", wifi_rssi()))
@@ -740,6 +757,11 @@ def process_wifi_packets():
 #  PROCESS BLE RECEIVE BUFFER
 # ══════════════════════════════════════════════
 
+# Print BLE messages only every Nth packet per node to reduce spam
+# e.g. BLE_PRINT_EVERY = 10 means 1 print per ~1 second (BLE fires ~10x/sec)
+BLE_PRINT_EVERY = 10
+_ble_recv_count = {}   # { node_id: count }
+
 def process_ble_buffer():
     while ble_rx_buffer:
         decoded  = ble_rx_buffer.pop(0)
@@ -764,8 +786,11 @@ def process_ble_buffer():
                 lnk["recv_count"] += 1
                 lnk["packet_loss"] = loss
             rebuild_routing_table()
-            label = "Hello" if pkt_type == BLE_PKT_TYPE_HELLO else "Metric"
-            print(f"[BLE]  {label} from {node_id}  RSSI={adv_rssi}dBm  lat={lat_ms:.1f}ms")
+            # Throttle: only print every BLE_PRINT_EVERY messages per node
+            _ble_recv_count[node_id] = _ble_recv_count.get(node_id, 0) + 1
+            if _ble_recv_count[node_id] % BLE_PRINT_EVERY == 1:
+                label = "Hello" if pkt_type == BLE_PKT_TYPE_HELLO else "Metric"
+                print(f"[BLE]  {label} from {node_id}  RSSI={adv_rssi}dBm  (#{_ble_recv_count[node_id]})")
 
         elif pkt_type == BLE_PKT_TYPE_PING:
             # Sender pinged via BLE adv – respond via WiFi with BLE RSSI included
