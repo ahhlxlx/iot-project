@@ -661,12 +661,16 @@ def send_metrics():
     w_losses = [lnk["packet_loss"] for (_, p), lnk in link_stats.items() if p == "WiFi"]
     b_losses = [lnk["packet_loss"] for (_, p), lnk in link_stats.items() if p == "BLE"]
     b_rssies = [lnk["rssi"]        for (_, p), lnk in link_stats.items() if p == "BLE"]
+    w_powers   = [lnk["power_cost"] for (_, p), lnk in link_stats.items() if p == "WiFi"]
+    b_powers   = [lnk["power_cost"] for (_, p), lnk in link_stats.items() if p == "BLE"]
 
     avg_w_lat  = sum(w_lats)   / len(w_lats)   if w_lats   else 0.0
     avg_b_lat  = sum(b_lats)   / len(b_lats)   if b_lats   else 0.0
     avg_w_loss = sum(w_losses) / len(w_losses) if w_losses else 0.0
     avg_b_loss = sum(b_losses) / len(b_losses) if b_losses else 0.0
     avg_b_rssi = sum(b_rssies) / len(b_rssies) if b_rssies else -99
+    avg_w_power = sum(w_powers) / len(w_powers) if w_powers else 0.5
+    avg_b_power = sum(b_powers) / len(b_powers) if b_powers else 0.5
 
     # Full routing snapshot
     rt_snapshot = {}
@@ -703,6 +707,8 @@ def send_metrics():
             "ble_packet_loss"    : round(avg_b_loss, 4),
             "wifi_rssi"          : rssi,
             "ble_rssi"           : round(avg_b_rssi, 1),
+            "wifi_power_cost"    : round(avg_w_power, 4),
+            "ble_power_cost"     : round(avg_b_power, 4),
         }
     }
     ok = udp_send(GATEWAY_IP, UDP_GW_PORT, wifi_pkt)
@@ -862,6 +868,8 @@ def process_ble_buffer():
                             "ble_packet_loss"    : loss,
                             "wifi_rssi"          : -99,
                             "ble_rssi"           : adv_rssi,
+                            "wifi_power_cost"    : 1.0,
+                            "ble_power_cost"     : min(1.0, max(0.05, (-adv_rssi - 50) / 40.0)),
                         }
                     }
                     ok = udp_send(GATEWAY_IP, UDP_GW_PORT, relay_pkt)
