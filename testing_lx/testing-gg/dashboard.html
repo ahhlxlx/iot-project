@@ -665,35 +665,82 @@ function buildNodeCardHTML(id, n, data) {
   const accentClass = statusLower === 'online' ? '' : statusLower;
 
   const metrics = n.metrics || {};
-  const wLat = metrics.wifi_avg_latency_ms || 0;
-  const bLat = metrics.ble_avg_latency_ms || 0;
-  const wRssi = metrics.wifi_rssi ?? n.rssi ?? -99;
-  const bRssi = metrics.ble_rssi ?? -99;
-  const wLoss = metrics.wifi_packet_loss ?? 0;
-  const bLoss = metrics.ble_packet_loss ?? 0;
-  const wPower = metrics.wifi_power_cost ?? 0;
-  const bPower = metrics.ble_power_cost ?? 0;
 
-  // Displayed latency: use the best available
-  const dispLat = n.avg_latency_ms || Math.max(wLat, bLat);
-
-  // Routing info
+  // Routing info — get the best route entry
   const rt = n.routing_table || {};
   const rtKeys = Object.keys(rt);
   let bestRoute = null;
   if (rtKeys.length > 0) {
+    // Pick the first route entry (usually only one for direct neighbours)
     bestRoute = rt[rtKeys[0]];
   }
 
-  const bestProto = bestRoute?.best_protocol || n.protocol || '—';
-  const bestCost = bestRoute?.cost ?? '—';
+  // ── Extract per-protocol values ──────────────────────────────
+  // BLE-Direct nodes send routing_table: {} in BLE ads (no room for JSON).
+  // WiFi METRIC packets carry the full routing table with wifi_lat, ble_lat, etc.
+  // But those per-protocol fields can be null even when the entry exists
+  // (e.g. node has no WiFi samples for a BLE-only neighbour).
+  //
+  // Strategy: use every available source, cascading through:
+  //   1. routing_table per-protocol fields (wifi_lat, ble_lat, wifi_cost, ble_cost)
+  //   2. routing_table general fields (avg_latency_ms, power_cost, cost)
+  //   3. metrics from the METRIC packet (wifi_avg_latency_ms, etc.)
+  //   4. top-level node fields (rssi, avg_latency_ms)
+
+  // General route values (always set when bestRoute exists)
+  const routeLat   = bestRoute?.avg_latency_ms ?? 0;
+  const routePower = bestRoute?.power_cost ?? 0;
+  const routeCost  = bestRoute?.cost ?? null;
+  const bestProto  = bestRoute?.best_protocol || n.protocol || '—';
+
+  // Per-protocol from routing table (can be null)
+  const rWifiLat  = bestRoute?.wifi_lat;    // null if not seen
+  const rBleLat   = bestRoute?.ble_lat;     // null if not seen
+  const rWifiCost = bestRoute?.wifi_cost;   // null if not seen
+  const rBleCost  = bestRoute?.ble_cost;    // null if not seen
+
+  // Per-protocol from metrics packet
+  const mWifiLat   = metrics.wifi_avg_latency_ms || 0;
+  const mBleLat    = metrics.ble_avg_latency_ms || 0;
+  const mWifiPower = metrics.wifi_power_cost || 0;
+  const mBlePower  = metrics.ble_power_cost || 0;
+
+  // Resolved WiFi values: route-specific > metrics > infer from bestProto
+  let wLat = rWifiLat ?? mWifiLat;
+  if (wLat === 0 && bestProto === 'WiFi' && routeLat > 0) wLat = routeLat;
+
+  let bLat = rBleLat ?? mBleLat;
+  if (bLat === 0 && bestProto === 'BLE' && routeLat > 0) bLat = routeLat;
+
+  let wPower = mWifiPower || (bestProto === 'WiFi' ? routePower : 0);
+  let bPower = mBlePower || (bestProto === 'BLE' ? routePower : 0);
+
+  let wCost = rWifiCost;
+  if (wCost == null && bestProto === 'WiFi' && routeCost != null) wCost = routeCost;
+
+  let bCost = rBleCost;
+  if (bCost == null && bestProto === 'BLE' && routeCost != null) bCost = routeCost;
+
+  // RSSI
+  const wRssi = metrics.wifi_rssi ?? n.rssi ?? -99;
+  const bRssi = metrics.ble_rssi ?? -99;
+
+  // Packet loss
+  const wLoss = metrics.wifi_packet_loss ?? 0;
+  const bLoss = metrics.ble_packet_loss ?? 0;
+
+  // Displayed latency: best available
+  const dispLat = n.avg_latency_ms || wLat || bLat || routeLat;
+
+  const bestCost = routeCost;
 
   const score = n.health_score ?? 0;
   const scoreColor = score >= 70 ? 'var(--accent-green)' : score >= 40 ? 'var(--accent-orange)' : 'var(--accent-red)';
 
-  // Current preference mode (from node data or local state)
-  const currentMode = n.route_mode || nodePrefState[id] || 'balanced';
-  nodePrefState[id] = currentMode;
+  // ── Route preference mode ──────────────────────────────────
+  // LOCAL state (set by user click) always wins over server-reported mode.
+  // Server mode only used on first load (before any click).
+  const currentMode = nodePrefState[id] || n.route_mode || 'balanced';
 
   const neighbours = n.neighbours || [];
   const hops = n.hop_count || 0;
@@ -742,20 +789,20 @@ function buildNodeCardHTML(id, n, data) {
           Best Route
           <span class="proto-badge ${bestProto === 'WiFi' ? 'proto-wifi' : 'proto-ble'}">${bestProto}</span>
         </div>
-        <div class="route-cost mono">COST: ${typeof bestCost === 'number' ? bestCost.toFixed(4) : bestCost}</div>
+        <div class="route-cost mono">COST: ${bestCost != null ? bestCost.toFixed(4) : 'N/A'}</div>
       </div>
       <div class="route-cols">
         <div>
           <div class="route-col-label"><span class="proto-badge proto-wifi">WiFi</span></div>
-          <div class="route-row">Latency <span class="rv mono">${wLat > 0 ? wLat.toFixed(1) + 'ms' : '—'}</span></div>
-          <div class="route-row">Power <span class="rv mono">${wPower > 0 ? wPower.toFixed(3) : '—'}</span></div>
-          <div class="route-row">Cost <span class="rv mono">${bestRoute?.wifi_cost != null ? bestRoute.wifi_cost.toFixed(4) : '—'}</span></div>
+          <div class="route-row">Latency <span class="rv mono">${wLat > 0 ? wLat.toFixed(1) + 'ms' : 'N/A'}</span></div>
+          <div class="route-row">Power <span class="rv mono">${wPower > 0 ? wPower.toFixed(3) : 'N/A'}</span></div>
+          <div class="route-row">Cost <span class="rv mono">${wCost != null ? wCost.toFixed(4) : 'N/A'}</span></div>
         </div>
         <div>
           <div class="route-col-label"><span class="proto-badge proto-ble">BLE</span></div>
-          <div class="route-row">Latency <span class="rv mono">${bLat > 0 ? bLat.toFixed(1) + 'ms' : '—'}</span></div>
-          <div class="route-row">Power <span class="rv mono">${bPower > 0 ? bPower.toFixed(3) : '—'}</span></div>
-          <div class="route-row">Cost <span class="rv mono">${bestRoute?.ble_cost != null ? bestRoute.ble_cost.toFixed(4) : '—'}</span></div>
+          <div class="route-row">Latency <span class="rv mono">${bLat > 0 ? bLat.toFixed(1) + 'ms' : 'N/A'}</span></div>
+          <div class="route-row">Power <span class="rv mono">${bPower > 0 ? bPower.toFixed(3) : 'N/A'}</span></div>
+          <div class="route-row">Cost <span class="rv mono">${bCost != null ? bCost.toFixed(4) : 'N/A'}</span></div>
         </div>
       </div>
     </div>

@@ -278,14 +278,47 @@ def process_metric_packet(pkt, sender_ip):
         if len(rssi_hist) > 20: rssi_hist.pop(0)
 
         # ── Build updated node entry ────────────────────────────────
+        # MERGE with existing data: BLE-Direct packets arrive with empty
+        # routing_table and sparse metrics.  Don't overwrite richer data
+        # that came from a WiFi METRIC packet.
+
+        prev = existing  # the previous entry (may be empty dict)
+
+        # Keep the richer routing table
+        merged_rt = rt if rt else prev.get("routing_table", {})
+        # If both exist, prefer the newer non-empty one
+        if rt and prev.get("routing_table"):
+            merged_rt = rt  # new data wins if it has content
+
+        # Merge per-protocol metrics: keep prior values for zeros
+        prev_metrics = prev.get("metrics", {})
+        merged_metrics = dict(prev_metrics)
+        for k, v in metrics.items():
+            # Only overwrite if the new value is meaningful
+            if v is not None and v != 0 and v != -99 and v != 1.0:
+                merged_metrics[k] = v
+            elif k not in merged_metrics:
+                merged_metrics[k] = v
+
+        # Keep WiFi sender_ip if current packet is BLE-only
+        merged_ip = sender_ip
+        if sender_ip in ("BLE-direct", "BLE-only") and prev.get("sender_ip") not in ("BLE-direct", "BLE-only", None):
+            merged_ip = prev.get("sender_ip", sender_ip)
+
+        # Keep route_mode and weights from prior if current packet doesn't have them
+        # Priority: route_preferences (set by dashboard) > packet > previous > default
+        pref = route_preferences.get(node_id, {})
+        merged_route_mode = pref.get("mode") or pkt.get("route_mode") or prev.get("route_mode", "balanced")
+        merged_weights = pref.get("weights") or pkt.get("weights") or prev.get("weights", {"w_latency": 0.5, "w_packet_loss": 0.3, "w_power": 0.2})
+
         node_data = {
             "node_id"         : node_id,
             "protocol"        : protocol,
-            "sender_ip"       : sender_ip,
+            "sender_ip"       : merged_ip,
             "last_seen"       : now,
             "last_seen_str"   : now_str,
             "rssi"            : rssi,
-            "avg_latency_ms"  : latency,
+            "avg_latency_ms"  : latency if latency > 0 else prev.get("avg_latency_ms", 0),
             "packet_loss"     : round(real_loss, 4),
             "throughput_est"  : throughput,
             "hop_count"       : hops,
@@ -293,13 +326,13 @@ def process_metric_packet(pkt, sender_ip):
             "seq_expected"    : seq + 1,
             "packets_received": total_rx,
             "packets_lost"    : total_lost,
-            "neighbours"      : nb,
-            "routing_table"   : rt,
+            "neighbours"      : nb if nb else prev.get("neighbours", []),
+            "routing_table"   : merged_rt,
             "latency_history" : lat_hist,
             "rssi_history"    : rssi_hist,
-            "metrics"         : metrics,  # full per-protocol metrics for dashboard
-            "route_mode"      : pkt.get("route_mode", "balanced"),
-            "weights"         : pkt.get("weights", {"w_latency": 0.5, "w_packet_loss": 0.3, "w_power": 0.2}),
+            "metrics"         : merged_metrics,
+            "route_mode"      : merged_route_mode,
+            "weights"         : merged_weights,
         }
 
         score, status, alerts = compute_health_score(node_data)
