@@ -102,6 +102,10 @@ udp_sock     = None
 ble_obj      = None
 my_ip        = "0.0.0.0"
 
+# Protocol availability flags – set during startup, re-checked in main loop
+wifi_active  = False   # True once WiFi is connected and UDP socket is open
+ble_active   = False   # True once BLE is initialised
+
 # BLE receive buffer filled by IRQ, drained in main loop
 ble_rx_buffer = []
 
@@ -122,7 +126,7 @@ last_ping_time   = 0
 # ══════════════════════════════════════════════
 
 def connect_wifi():
-    global wlan, my_ip
+    global wlan, my_ip, wifi_active
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
     wlan.connect(WIFI_SSID, WIFI_PASSWORD)
@@ -133,17 +137,53 @@ def connect_wifi():
         time.sleep(1)
     if wlan.isconnected():
         my_ip = wlan.ifconfig()[0]
+        wifi_active = True
         print(f"[WiFi] Connected  IP={my_ip}")
         return True
-    print("[WiFi] FAILED – check SSID / password")
+    wifi_active = False
+    print("[WiFi] FAILED – running in BLE-only mode")
     return False
 
 
 def wifi_rssi():
     try:
-        return wlan.status('rssi')
+        if wifi_active and wlan and wlan.isconnected():
+            return wlan.status('rssi')
     except Exception:
-        return -99
+        pass
+    return -99
+
+
+def check_wifi_reconnect():
+    """
+    Called periodically in the main loop.
+    If WiFi was lost, try to reconnect silently.
+    If WiFi was never available, try once to join.
+    """
+    global wifi_active, udp_sock, my_ip
+    if wifi_active and wlan and wlan.isconnected():
+        return  # all good
+    # WiFi dropped or was never up — attempt reconnect
+    print("[WiFi] Connection lost – attempting reconnect...")
+    try:
+        wlan.connect(WIFI_SSID, WIFI_PASSWORD)
+        for _ in range(10):
+            if wlan.isconnected():
+                break
+            time.sleep(1)
+        if wlan.isconnected():
+            my_ip = wlan.ifconfig()[0]
+            wifi_active = True
+            # Reopen UDP socket if it was closed
+            if udp_sock is None:
+                setup_udp()
+            print(f"[WiFi] Reconnected  IP={my_ip}")
+        else:
+            wifi_active = False
+            print("[WiFi] Reconnect failed – staying in BLE-only mode")
+    except Exception as e:
+        wifi_active = False
+        print(f"[WiFi] Reconnect error: {e}")
 
 
 # ══════════════════════════════════════════════
@@ -152,14 +192,23 @@ def wifi_rssi():
 
 def setup_udp():
     global udp_sock
-    udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    udp_sock.bind(("0.0.0.0", UDP_MESH_PORT))
-    udp_sock.setblocking(False)
-    print(f"[UDP]  Listening on port {UDP_MESH_PORT}")
+    if not wifi_active:
+        print("[UDP]  Skipped – no WiFi")
+        return
+    try:
+        udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        udp_sock.bind(("0.0.0.0", UDP_MESH_PORT))
+        udp_sock.setblocking(False)
+        print(f"[UDP]  Listening on port {UDP_MESH_PORT}")
+    except Exception as e:
+        print(f"[UDP]  Setup failed: {e}")
+        udp_sock = None
 
 
 def udp_send(ip, port, obj):
+    if not wifi_active or udp_sock is None:
+        return False
     try:
         udp_sock.sendto(json.dumps(obj).encode(), (ip, port))
         return True
@@ -169,6 +218,8 @@ def udp_send(ip, port, obj):
 
 
 def udp_broadcast(port, obj):
+    if not wifi_active or udp_sock is None:
+        return False
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -280,20 +331,22 @@ def ble_irq(event, data):
 # ══════════════════════════════════════════════
 
 def setup_ble():
-    global ble_obj
+    global ble_obj, ble_active
     try:
         ble_obj = ubluetooth.BLE()
         ble_obj.active(True)
         ble_obj.irq(ble_irq)
         ble_obj.gap_scan(0, 100_000, 50_000, False)  # continuous passive scan
+        ble_active = True
         print("[BLE]  Scanning started")
     except Exception as e:
         print(f"[BLE]  Setup failed: {e}")
-        ble_obj = None
+        ble_obj    = None
+        ble_active = False
 
 
 def ble_advertise(pkt_type, seq_hop, ts, rssi, lat_ms, loss_pct):
-    if ble_obj is None:
+    if not ble_active or ble_obj is None:
         return
     try:
         payload = encode_ble(pkt_type, seq_hop, ts, rssi, lat_ms, loss_pct)
@@ -665,8 +718,9 @@ def send_metrics():
     ble_advertise(BLE_PKT_TYPE_METRIC, seq_number & 0xFF,
                   ts, rssi, avg_b_lat, avg_b_loss)
 
-    print(f"[Metric] WiFi seq={seq_number} rssi={rssi}dBm  |  "
-          f"BLE seq={seq_number & 0xFF} lat={avg_b_lat:.1f}ms")
+    active = ("WiFi+" if wifi_active else "") + ("BLE" if ble_active else "")
+    print(f"[Metric] [{active}] seq={seq_number} wifi_rssi={rssi}dBm  |  "
+          f"ble_lat={avg_b_lat:.1f}ms")
 
     # ── 3. Print routing decision ─────────────────────────────────
     print_routing_table()
@@ -819,22 +873,41 @@ def main():
     print("║  Dual-Protocol: WiFi + BLE               ║")
     print("╚══════════════════════════════════════════╝")
 
-    if not connect_wifi():
-        print("[FATAL] WiFi failed. Cannot start.")
-        return
+    # ── Try WiFi (non-fatal if it fails) ────────────────────────
+    connect_wifi()
+    if wifi_active:
+        setup_udp()
+    else:
+        print("[Node] WiFi unavailable – starting in BLE-only mode")
 
-    setup_udp()
+    # ── Start BLE (non-fatal if it fails) ───────────────────────
     setup_ble()
 
-    print(f"\n[Node] {NODE_ID} ready  IP={my_ip}")
-    print("[Node] Both WiFi and BLE active – starting mesh...\n")
+    if not wifi_active and not ble_active:
+        print("[FATAL] Both WiFi and BLE unavailable. Cannot start.")
+        return
 
-    last_hello_time  = 0
-    last_metric_time = 0
-    last_ping_time   = 0
+    # ── Report active protocols ──────────────────────────────────
+    active = []
+    if wifi_active: active.append(f"WiFi ({my_ip})")
+    if ble_active:  active.append("BLE")
+    print(f"\n[Node] {NODE_ID} ready  –  Active: {' + '.join(active)}\n")
+
+    last_hello_time   = 0
+    last_metric_time  = 0
+    last_ping_time    = 0
+    last_wifi_retry   = 0
+    WIFI_RETRY_INTERVAL = 30   # retry WiFi every 30s if disconnected
 
     while True:
         now = time.time()
+
+        # ── Periodically retry WiFi if it's down ─────────────────
+        if not wifi_active and now - last_wifi_retry >= WIFI_RETRY_INTERVAL:
+            check_wifi_reconnect()
+            if wifi_active and udp_sock is None:
+                setup_udp()
+            last_wifi_retry = now
 
         # A. Neighbour Discovery (Hello over WiFi + BLE)
         if now - last_hello_time >= HELLO_INTERVAL:
@@ -852,13 +925,15 @@ def main():
             send_metrics()
             last_metric_time = now
 
-        # D. Receive and process incoming WiFi packets
-        process_wifi_packets()
+        # D. Receive and process incoming WiFi packets (skipped if no WiFi)
+        if wifi_active and udp_sock is not None:
+            process_wifi_packets()
 
-        # E. Process BLE scan results from IRQ buffer
-        process_ble_buffer()
+        # E. Process BLE scan results from IRQ buffer (skipped if no BLE)
+        if ble_active:
+            process_ble_buffer()
 
-        time.sleep(0.05)   # 50ms poll loop
+        time.sleep(0.05)
 
 
 # ══════════════════════════════════════════════
