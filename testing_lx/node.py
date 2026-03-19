@@ -31,7 +31,7 @@ from micropython import const
 # ══════════════════════════════════════════════
 #  ① NODE CONFIGURATION  ← edit per device
 # ══════════════════════════════════════════════
-NODE_ID        = "NODE_01"       # Change to NODE_02, NODE_03 … for each Pico W
+NODE_ID        = "NODE_lx"       # Change to NODE_02, NODE_03 … for each Pico W
 GATEWAY_IP     = "10.200.176.43"   # Raspberry Pi IP
 WIFI_SSID      = "OnePlus13Equals14"       # Shared WiFi network name
 WIFI_PASSWORD  = "gkpm5847"   # Shared WiFi password
@@ -896,6 +896,7 @@ def process_ble_buffer():
 
 def main():
     global last_hello_time, last_metric_time, last_ping_time
+    global wifi_active, ble_active, my_ip, udp_sock
 
     print("╔══════════════════════════════════════════╗")
     print(f"║  Mesh Node  {NODE_ID:<8}  (Pico W)      ║")
