@@ -334,6 +334,7 @@ const MODE_TO_GATEWAY = { speed: 'latency', reliability: 'cost', power: 'power',
 
 let ws = null, latestData = null, knownNodes = new Set(), currentMode = 'speed';
 let lastComputedHops = []; // track for "Apply to Nodes"
+let hasCalculated = false; // true only after user explicitly triggers analysis
 
 function showToast(msg, type, duration) {
   type = type || 'info'; duration = duration || 3500;
@@ -457,7 +458,7 @@ function setMode(mode) {
   const p = WEIGHT_PROFILES[mode];
   const el = document.getElementById('hopModeLabel');
   el.textContent = p.label; el.style.color = p.color;
-  analyzePath();
+  if (hasCalculated) analyzePath();
 }
 
 function connectWS() {
@@ -468,7 +469,8 @@ function connectWS() {
     try {
       const data = JSON.parse(event.data);
       if (data.type === 'update') {
-        latestData = data; updateNodeSelectors(data); analyzePath();
+        latestData = data; updateNodeSelectors(data);
+        if (hasCalculated) analyzePath();
         document.getElementById('lastUpdate').textContent = data.timestamp || '—';
         document.getElementById('gwStatus').innerHTML = data.gateway_online
           ? '<span class="status-dot online"></span> Gateway: Online'
@@ -777,11 +779,16 @@ function renderNoRouteState(src, dst) {
   document.getElementById('hopTableFoot').style.display='none';
 }
 
-document.getElementById('srcNode').addEventListener('change', analyzePath);
-document.getElementById('dstNode').addEventListener('change', analyzePath);
+document.getElementById('srcNode').addEventListener('change', () => {
+  hasCalculated = true; analyzePath();
+});
+document.getElementById('dstNode').addEventListener('change', () => {
+  hasCalculated = true; analyzePath();
+});
 document.getElementById('swapBtn').addEventListener('click', () => {
   const s = document.getElementById('srcNode'), d = document.getElementById('dstNode');
-  const t = s.value; s.value = d.value; d.value = t; analyzePath();
+  const t = s.value; s.value = d.value; d.value = t;
+  hasCalculated = true; analyzePath();
 });
 
 connectWS();

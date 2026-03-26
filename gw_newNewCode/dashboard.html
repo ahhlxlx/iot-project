@@ -702,7 +702,12 @@ function buildNodeCardHTML(id, n, data) {
   }
 
   // ── Gather all sources ────────────────────────────────────────
-  const bestProto = bestRoute?.best_protocol || n.protocol || '—';
+  // IMPORTANT: bestProto must come ONLY from the routing table's best_protocol.
+  // n.protocol is the gateway's connection type (e.g. "BLE-Direct" if the node
+  // reached the gateway via BLE relay) — it is NOT the best routing protocol.
+  // Falling back to n.protocol incorrectly shows BLE for nodes whose best
+  // route IS WiFi, because BLE metric packets arrive more frequently.
+  const bestProto = bestRoute?.best_protocol || '—';
 
   // RSSI
   const wRssi = metrics.wifi_rssi ?? n.rssi ?? -99;
@@ -803,7 +808,7 @@ function buildNodeCardHTML(id, n, data) {
       <div class="route-header">
         <div class="route-header-left">
           Best Route
-          <span class="proto-badge ${bestProto.includes('WiFi') ? 'proto-wifi' : 'proto-ble'}">${bestProto}</span>
+          <span class="proto-badge ${bestProto === 'WiFi' ? 'proto-wifi' : bestProto === 'BLE' ? 'proto-ble' : ''}">${bestProto}</span>
         </div>
         <div class="route-cost mono">COST: ${bestCost != null ? bestCost.toFixed(4) : '—'}</div>
       </div>
@@ -858,7 +863,7 @@ function buildNodeCardHTML(id, n, data) {
         Score: ${score}/100
       </span>
       <span>${bestRoute ? bestRoute.best_protocol + '-' + (bestRoute.next_hop || 'direct') : '—'}</span>
-      <span>Proto: ${n.protocol || '—'}</span>
+      <span>GW Link: ${n.protocol || '—'}</span>
     </div>
   `;
 }
