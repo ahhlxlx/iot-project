@@ -880,7 +880,8 @@ def process_ble_buffer():
                 # If WE have WiFi and the sender only has BLE (no WiFi
                 # link seen for them), forward a metric packet to the
                 # gateway on their behalf so they appear in the Health Matrix.
-                sender_has_wifi = get_link(node_id, "WiFi")["last_seen"] > 0
+                wifi_key = (node_id, "WiFi")
+                sender_has_wifi = wifi_key in link_stats and link_stats[wifi_key]["last_seen"] > 0
                 if wifi_active and not sender_has_wifi:
                     relay_pkt = {
                         "type"        : "METRIC",

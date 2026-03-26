@@ -544,7 +544,9 @@ function buildEndpointHop(from, to, nodeData, weights) {
   const wC = wA ? computeCost(wLat, wLoss, wPow, weights) : 9999;
   const bC = bA ? computeCost(bLat, bLoss, bPow, weights) : 9999;
   const isWifi = wC <= bC;
-  const nd = proto.includes('BLE') ? 'BLE' : 'WiFi';
+  const rt = nodeData.routing_table || {};
+  const rtEntry = rt[to];
+  const nd = rtEntry?.best_protocol || (proto.includes('BLE') ? 'BLE' : 'WiFi');
   return {
     from, to, protocol: isWifi ? 'WiFi' : 'BLE', node_decided: nd,
     changed: (isWifi ? 'WiFi' : 'BLE') !== nd,
