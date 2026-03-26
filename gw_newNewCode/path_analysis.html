@@ -410,7 +410,12 @@ async function applyToNodes() {
       tagContainer.appendChild(tag);
     }
 
-    if (failCount === 0 && queuedCount === 0) {
+    if (successCount === 0 && failCount === 0 && queuedCount === 0) {
+      // No results at all — gateway may not have the /route_pref endpoint yet
+      btn.className = 'apply-btn error';
+      btn.textContent = '✕ No response';
+      showToast('Gateway did not return any node results. Make sure gateway.py is restarted with the updated code.', 'error', 6000);
+    } else if (failCount === 0 && queuedCount === 0) {
       btn.className = 'apply-btn success';
       btn.textContent = '✓ Applied to ' + successCount + ' Node' + (successCount > 1 ? 's' : '');
       showToast('All ' + successCount + ' node' + (successCount > 1 ? 's' : '') + ' updated to ' + profile.label + ' mode. Nodes will recalculate routes immediately.', 'success', 5000);

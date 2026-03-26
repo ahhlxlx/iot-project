@@ -443,6 +443,15 @@ async def api_route_pref_set(request: Request):
 
     result = await send_route_pref_via_gateway([node_id], gw_mode)
 
+    # If gateway returned an error (e.g. 404, unreachable), report it
+    if result.get("error"):
+        return {
+            "ok": False,
+            "error": result["error"],
+            "node_id": node_id,
+            "mode": mode,
+        }
+
     # Extract this node's result for the dashboard
     node_results = result.get("node_results", {})
     node_result = node_results.get(node_id, {})
@@ -531,6 +540,18 @@ async def api_path_apply(request: Request):
 
     # 3. Send ROUTE_PREF via gateway (handles WiFi + BLE-only nodes)
     gw_result = await send_route_pref_via_gateway(node_ids, mode, weights)
+
+    # If gateway itself failed (404, unreachable, etc.), report the error
+    if gw_result.get("error"):
+        return {
+            "error": f"Gateway error: {gw_result['error']}",
+            "src": src, "dst": dst, "mode": mode,
+            "hops": hops,
+            "node_results": {},
+            "success_count": 0,
+            "fail_count": len(node_ids),
+            "total_nodes": len(node_ids),
+        }
 
     results = gw_result.get("node_results", {})
     success_count = gw_result.get("success_count", 0)
