@@ -1096,17 +1096,8 @@ function renderTopology(data) {
     let opacity = 0.4;
 
     if (isRoute) {
-      // Check if it's WiFi or BLE based on edge info or node protocol
-      const nodeData = nodes[e.from] || nodes[e.to] || {};
-      const bestProto = nodeData.protocol || '';
-      if (bestProto.includes('BLE')) {
-        stroke = '#a78bfa'; marker = 'url(#arrow-purple)';
-      } else {
-        stroke = '#06b6d4'; marker = 'url(#arrow-cyan)';
-      }
-      width = 2.5;
-      dash = '';
-      opacity = 0.7;
+      // In renderTopology, replace the protocol colour logic:
+      const bestProto = e.protocol || (node[e.from]?.protocol) || '';
     }
 
     // Line

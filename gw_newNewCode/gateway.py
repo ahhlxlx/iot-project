@@ -281,7 +281,9 @@ def process_metric_packet(pkt, sender_ip):
     hops     = pkt.get("hop_count", 0)
     protocol = pkt.get("protocol", "WiFi")
 
-    latency   = metrics.get("latency_avg", 0.0)
+    w_lat     = metrics.get("wifi_avg_latency_ms", 0.0)
+    b_lat     = metrics.get("ble_avg_latency_ms", 0.0)
+    latency   = w_lat if w_lat > 0 else b_lat   # use best available
     loss      = metrics.get("packet_loss", 0.0)
     throughput= metrics.get("throughput_est", 0.0)
 
@@ -613,8 +615,9 @@ def api_topology():
                     "to"       : dest,
                     "via"      : route.get("next_hop"),
                     "hop_count": route.get("hop_count"),
-                    "latency"  : route.get("avg_latency"),
-                    "cost"     : route.get("cost")
+                    "latency"  : route.get("avg_latency_ms"),
+                    "cost"     : route.get("cost"),
+                    "protocol"     : route.get("best_protocol"),
                 })
     return jsonify({"edges": edges})
 
