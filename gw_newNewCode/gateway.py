@@ -294,6 +294,26 @@ def process_metric_packet(pkt, sender_ip):
         has_real_ip    = sender_ip not in ("BLE-direct", "BLE-only", "")
         ip_transition  = is_ble_only_ip and has_real_ip
 
+        # ── Preserve WiFi IP across BLE packet arrivals ─────────────
+        # Nodes send metrics over BOTH WiFi and BLE. The BLE scanner
+        # calls process_metric_packet with sender_ip="BLE-direct".
+        # We must NOT overwrite a known WiFi IP with "BLE-direct",
+        # otherwise the gateway thinks the node is BLE-only and
+        # can't send UDP commands to it.
+        existing_wifi_ip = existing.get("wifi_ip", "")
+        if has_real_ip:
+            # New WiFi packet — update the WiFi IP
+            resolved_ip = sender_ip
+            wifi_ip     = sender_ip
+        elif existing_wifi_ip:
+            # BLE packet, but we have a known WiFi IP — keep it
+            resolved_ip = existing_wifi_ip
+            wifi_ip     = existing_wifi_ip
+        else:
+            # Truly BLE-only — no WiFi IP known
+            resolved_ip = sender_ip
+            wifi_ip     = ""
+
         # ── Sequence number tracking ───────────────────────────────
         if node_id not in seq_tracker:
             seq_tracker[node_id] = {"last_seq": seq, "expected_seq": seq + 1,
@@ -325,7 +345,8 @@ def process_metric_packet(pkt, sender_ip):
         node_data = {
             "node_id"         : node_id,
             "protocol"        : protocol,
-            "sender_ip"       : sender_ip,
+            "sender_ip"       : resolved_ip,
+            "wifi_ip"         : wifi_ip,
             "last_seen"       : now,
             "last_seen_str"   : now_str,
             "rssi"            : rssi,
@@ -355,7 +376,7 @@ def process_metric_packet(pkt, sender_ip):
     # ── Auto-deliver pending ROUTE_PREF on BLE→WiFi transition ──
     # (outside matrix_lock to avoid holding the lock during UDP send)
     if ip_transition and node_id in pending_route_prefs:
-        deliver_pending_route_pref(node_id, sender_ip)
+        deliver_pending_route_pref(node_id, resolved_ip)
 
     log.info(
         f"[{node_id}] Protocol={protocol} Seq={seq} RSSI={rssi}dBm "
@@ -374,6 +395,7 @@ def process_hello_packet(pkt, sender_ip):
     now     = time.time()
     rssi    = pkt.get("rssi", -99)
     rt      = pkt.get("routing", {})
+    has_real_ip = sender_ip not in ("BLE-direct", "BLE-only", "")
 
     with matrix_lock:
         if node_id not in health_matrix:
@@ -387,6 +409,7 @@ def process_hello_packet(pkt, sender_ip):
                 "rssi"       : rssi,
                 "routing_table": rt,
                 "sender_ip"  : sender_ip,
+                "wifi_ip"    : sender_ip if has_real_ip else "",
                 "alerts"     : [],
                 "packets_received": 0,
                 "packets_lost": 0
@@ -397,6 +420,10 @@ def process_hello_packet(pkt, sender_ip):
             health_matrix[node_id]["last_seen_str"] = datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S")
             health_matrix[node_id]["rssi"]          = rssi
             health_matrix[node_id]["routing_table"] = rt
+            # Only update sender_ip if this is a WiFi packet (don't let BLE overwrite)
+            if has_real_ip:
+                health_matrix[node_id]["sender_ip"] = sender_ip
+                health_matrix[node_id]["wifi_ip"]   = sender_ip
 
 
 # ─────────────────────────────────────────────
@@ -649,7 +676,11 @@ def api_route_pref():
             continue
 
         sender_ip = node_data.get("sender_ip", "")
-        is_ble_only = not sender_ip or sender_ip in ("BLE-direct", "BLE-only")
+        wifi_ip   = node_data.get("wifi_ip", "")
+        # Use wifi_ip as fallback — sender_ip should already prefer WiFi,
+        # but wifi_ip is an explicit record that survives BLE packet races
+        target_ip = sender_ip if sender_ip not in ("BLE-direct", "BLE-only", "") else wifi_ip
+        is_ble_only = not target_ip or target_ip in ("BLE-direct", "BLE-only")
 
         if is_ble_only:
             # ── Queue for later delivery ──
@@ -666,7 +697,7 @@ def api_route_pref():
             log.info(f"[RoutePref] Queued {mode} for BLE-only node {nid}")
         else:
             # ── Send UDP directly ──
-            ok, msg = send_route_pref_to_node(nid, mode, weights, sender_ip)
+            ok, msg = send_route_pref_to_node(nid, mode, weights, target_ip)
             results[nid] = {"ok": ok, "method": "udp", "message": msg}
 
     success = sum(1 for r in results.values() if r["ok"])
