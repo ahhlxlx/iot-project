@@ -16,7 +16,6 @@ import asyncio
 import json
 import time
 import os
-import socket as raw_socket
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -33,7 +32,6 @@ GATEWAY_URL      = "http://10.200.176.43:8080"
 DASHBOARD_PORT   = 9000
 POLL_INTERVAL    = 2.0
 HISTORY_MAX      = 100
-UDP_MESH_PORT    = 5005   # Port nodes listen on for ROUTE_PREF
 
 # ─────────────────────────────────────────────
 #  LOGGING
@@ -390,37 +388,73 @@ def trace_path(src, dst, nodes, weights):
 
 
 # ═══════════════════════════════════════════════════
-#  SEND ROUTE_PREF DIRECTLY TO NODE VIA UDP
-#  Bypasses gateway.py Flask API entirely.
-#  Uses "NODE_SV" as sender so it passes node.py
-#  valid_node_id() check (must start with "NODE_").
+#  SEND ROUTE_PREF VIA GATEWAY
+#  Routes through gateway.py's /route_pref endpoint.
+#  Gateway handles WiFi (UDP) vs BLE (queue) delivery.
 # ═══════════════════════════════════════════════════
 
-def send_route_pref_udp(node_id, mode, weights, node_ip):
+async def send_route_pref_via_gateway(node_ids, mode, weights=None):
     """
-    Send a ROUTE_PREF UDP packet directly to a node.
-    Returns (ok: bool, message: str)
+    Ask the gateway to deliver ROUTE_PREF to nodes.
+    Gateway will:
+      - WiFi nodes: send UDP directly
+      - BLE-only nodes: queue, auto-deliver when WiFi reconnects
+    Returns dict of per-node results.
     """
-    cmd = {
-        "type":           "ROUTE_PREF",
-        "node_id":        "NODE_SV",      # "NODE_SV" passes valid_node_id() in node.py
-        "target":         node_id,         # The node checks: if target == NODE_ID
-        "mode":           mode,
-        "w_latency":      weights["w_latency"],
-        "w_packet_loss":  weights["w_packet_loss"],
-        "w_power":        weights["w_power"],
-        "timestamp":      time.time(),
+    payload = {
+        "node_ids": list(node_ids),
+        "mode": mode,
     }
+    if weights:
+        payload["weights"] = weights
+
     try:
-        s = raw_socket.socket(raw_socket.AF_INET, raw_socket.SOCK_DGRAM)
-        s.settimeout(2.0)
-        s.sendto(json.dumps(cmd).encode(), (node_ip, UDP_MESH_PORT))
-        s.close()
-        log.info(f"[RoutePref] Sent {mode} weights to {node_id} @ {node_ip}")
-        return True, f"Sent to {node_id} @ {node_ip}"
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(f"{GATEWAY_URL}/route_pref", json=payload)
+            if resp.status_code == 200:
+                return resp.json()
+            else:
+                return {"ok": False, "error": f"Gateway returned {resp.status_code}"}
     except Exception as e:
-        log.error(f"[RoutePref] Failed to send to {node_id} @ {node_ip}: {e}")
-        return False, str(e)
+        log.error(f"[RoutePref] Gateway request failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+# ─────────────────────────────────────────────
+#  API: ROUTE PREF SET  (single node, from dashboard.html)
+# ─────────────────────────────────────────────
+@app.post("/api/route_pref_set")
+async def api_route_pref_set(request: Request):
+    """
+    Set route preference for a single node.
+    Called by dashboard.html preference buttons.
+    Body: { "node_id": "NODE_Ad", "mode": "latency" }
+    """
+    body = await request.json()
+    node_id = body.get("node_id", "")
+    mode = body.get("mode", "balanced")
+
+    if not node_id:
+        return {"error": "node_id required"}
+
+    # Map dashboard mode names to gateway profile names
+    mode_map = {"latency": "latency", "cost": "cost", "power": "power", "balanced": "balanced"}
+    gw_mode = mode_map.get(mode, mode)
+
+    result = await send_route_pref_via_gateway([node_id], gw_mode)
+
+    # Extract this node's result for the dashboard
+    node_results = result.get("node_results", {})
+    node_result = node_results.get(node_id, {})
+
+    return {
+        "ok": node_result.get("ok", False),
+        "node_id": node_id,
+        "mode": mode,
+        "method": node_result.get("method", "unknown"),
+        "message": node_result.get("message", ""),
+        "weights": result.get("weights"),
+    }
 
 
 # ─────────────────────────────────────────────
@@ -465,7 +499,8 @@ async def api_path_analyze(request: Request):
 @app.post("/api/path_apply")
 async def api_path_apply(request: Request):
     """
-    Calculate path AND send route preferences to all nodes via direct UDP.
+    Calculate path AND send route preferences to all nodes via gateway.
+    Gateway handles WiFi (direct UDP) vs BLE-only (queued) delivery.
     Body: { "src": "NODE_Ad", "dst": "NODE_gw", "mode": "latency" }
     """
     body = await request.json()
@@ -494,29 +529,12 @@ async def api_path_apply(request: Request):
     if not node_ids:
         return {"error": "No nodes in path to update", "hops": hops}
 
-    # 3. Send ROUTE_PREF via UDP directly to each node
-    results = {}
-    for nid in node_ids:
-        node_data = nodes.get(nid)
-        if not node_data:
-            results[nid] = {"ok": False, "message": "Node not in health matrix"}
-            continue
+    # 3. Send ROUTE_PREF via gateway (handles WiFi + BLE-only nodes)
+    gw_result = await send_route_pref_via_gateway(node_ids, mode, weights)
 
-        sender_ip = node_data.get("sender_ip", "")
-
-        # BLE-only nodes have no IP — can't send UDP
-        if not sender_ip or sender_ip in ("BLE-direct", "BLE-only", ""):
-            results[nid] = {
-                "ok": False,
-                "message": "BLE-only node — no WiFi IP to send UDP"
-            }
-            continue
-
-        ok, msg = send_route_pref_udp(nid, mode, weights, sender_ip)
-        results[nid] = {"ok": ok, "message": msg}
-
-    success_count = sum(1 for r in results.values() if r["ok"])
-    fail_count = len(results) - success_count
+    results = gw_result.get("node_results", {})
+    success_count = gw_result.get("success_count", 0)
+    fail_count = gw_result.get("fail_count", 0)
 
     return {
         "src": src, "dst": dst, "mode": mode,

@@ -345,12 +345,19 @@ function showToast(msg, type, duration) {
 }
 
 // ══════════════════════════════════════════════
-// APPLY ROUTE PREFERENCE TO NODES (single backend call)
+// APPLY ROUTE PREFERENCE TO NODES
 // ══════════════════════════════════════════════
 async function applyToNodes() {
-  const src = document.getElementById('srcNode').value;
-  const dst = document.getElementById('dstNode').value;
-  if (!src || !dst || !lastComputedHops.length) return;
+  if (!lastComputedHops.length) return;
+
+  // Collect unique node IDs in the path (exclude GATEWAY)
+  const nodeIds = new Set();
+  lastComputedHops.forEach(function(h) {
+    if (h.from !== 'GATEWAY') nodeIds.add(h.from);
+    if (h.to !== 'GATEWAY') nodeIds.add(h.to);
+  });
+
+  if (nodeIds.size === 0) { showToast('No nodes to update', 'error'); return; }
 
   const gwMode = MODE_TO_GATEWAY[currentMode];
   const profile = WEIGHT_PROFILES[currentMode];
@@ -358,65 +365,58 @@ async function applyToNodes() {
   btn.className = 'apply-btn sending';
   btn.textContent = 'Sending…';
 
-  showToast('Calculating path and sending ' + profile.label + ' weights to nodes…', 'info');
+  showToast('Sending ' + profile.label + ' weights to ' + nodeIds.size + ' node' + (nodeIds.size > 1 ? 's' : '') + '…', 'info');
 
-  try {
-    const resp = await fetch('/api/path_apply', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ src: src, dst: dst, mode: gwMode })
-    });
-    const data = await resp.json();
+  let successCount = 0, failCount = 0;
+  const results = {};
 
-    if (data.error) {
-      btn.className = 'apply-btn error';
-      btn.textContent = '✕ Failed';
-      showToast('Error: ' + data.error, 'error', 5000);
-      setTimeout(function(){ btn.className = 'apply-btn'; btn.textContent = '⚡ Apply ' + profile.label + ' to Nodes'; }, 4000);
-      return;
+  for (const nodeId of nodeIds) {
+    try {
+      const resp = await fetch('/api/route_pref_set', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ node_id: nodeId, mode: gwMode })
+      });
+      const data = await resp.json();
+      if (data.ok || data.message) {
+        results[nodeId] = 'sent';
+        successCount++;
+      } else {
+        results[nodeId] = 'failed';
+        failCount++;
+      }
+    } catch (e) {
+      results[nodeId] = 'failed';
+      failCount++;
     }
-
-    const results = data.node_results || {};
-    const successCount = data.success_count || 0;
-    const failCount = data.fail_count || 0;
-
-    // Update node tags
-    const tagContainer = document.getElementById('applyNodesList');
-    tagContainer.innerHTML = '';
-    for (const nodeId in results) {
-      const tag = document.createElement('span');
-      const ok = results[nodeId].ok;
-      tag.className = 'apply-node-tag ' + (ok ? 'sent' : 'failed');
-      tag.textContent = nodeId + ' ' + (ok ? '✓' : '✕');
-      if (!ok) tag.title = results[nodeId].message || 'Failed';
-      tagContainer.appendChild(tag);
-    }
-
-    if (failCount === 0) {
-      btn.className = 'apply-btn success';
-      btn.textContent = '✓ Applied to ' + successCount + ' Node' + (successCount > 1 ? 's' : '');
-      showToast('All ' + successCount + ' node' + (successCount > 1 ? 's' : '') + ' updated to ' + profile.label + ' mode. Nodes will recalculate routes immediately.', 'success', 5000);
-    } else if (successCount > 0) {
-      btn.className = 'apply-btn error';
-      btn.textContent = successCount + ' sent, ' + failCount + ' failed';
-      // Show failure reasons
-      var failMsgs = [];
-      for (var nid in results) { if (!results[nid].ok) failMsgs.push(nid + ': ' + (results[nid].message || 'unknown')); }
-      showToast('Partial: ' + failMsgs.join(', '), 'error', 6000);
-    } else {
-      btn.className = 'apply-btn error';
-      btn.textContent = '✕ All failed';
-      var failMsgs = [];
-      for (var nid in results) { if (!results[nid].ok) failMsgs.push(nid + ': ' + (results[nid].message || 'unknown')); }
-      showToast('Failed: ' + failMsgs.join(', '), 'error', 6000);
-    }
-  } catch (e) {
-    btn.className = 'apply-btn error';
-    btn.textContent = '✕ Connection Error';
-    showToast('Could not reach server: ' + e.message, 'error', 5000);
   }
 
-  setTimeout(function(){ btn.className = 'apply-btn'; btn.textContent = '⚡ Apply ' + profile.label + ' to Nodes'; }, 4000);
+  // Update node tags in the apply panel
+  const tagContainer = document.getElementById('applyNodesList');
+  tagContainer.innerHTML = '';
+  for (const nodeId of nodeIds) {
+    const tag = document.createElement('span');
+    tag.className = 'apply-node-tag ' + (results[nodeId] === 'sent' ? 'sent' : 'failed');
+    tag.textContent = nodeId + ' ' + (results[nodeId] === 'sent' ? '✓' : '✕');
+    tagContainer.appendChild(tag);
+  }
+
+  // Update button state
+  if (failCount === 0) {
+    btn.className = 'apply-btn success';
+    btn.textContent = '✓ Applied to ' + successCount + ' Node' + (successCount > 1 ? 's' : '');
+    showToast('All ' + successCount + ' node' + (successCount > 1 ? 's' : '') + ' updated to ' + profile.label + ' mode. They will recalculate routes immediately.', 'success', 5000);
+  } else {
+    btn.className = 'apply-btn error';
+    btn.textContent = successCount + ' sent, ' + failCount + ' failed';
+    showToast(failCount + ' node' + (failCount > 1 ? 's' : '') + ' failed to update. Check gateway connection.', 'error', 5000);
+  }
+
+  // Reset button after 4 seconds
+  setTimeout(function() {
+    btn.className = 'apply-btn';
+    btn.textContent = '⚡ Apply to Nodes';
+  }, 4000);
 }
 
 function setMode(mode) {
@@ -533,38 +533,23 @@ function tracePath(src, dst, nodes, weights) {
   while (current !== dst && hops.length < 10) {
     if (visited.has(current)) break;
     visited.add(current);
-    // Current is GATEWAY → go directly to destination
     if (current === 'GATEWAY') {
       const nd = nodes[dst]; if (nd) hops.push(buildEndpointHop('GATEWAY', dst, nd, weights)); break;
     }
     const fn = nodes[current]; if (!fn) break;
-    // Destination is GATEWAY → direct link
     if (dst === 'GATEWAY') { hops.push(buildEndpointHop(current, 'GATEWAY', fn, weights)); break; }
-    // Check routing table
     const rt = fn.routing_table || {}, re = rt[dst];
     if (re) {
       const nh = re.next_hop || dst;
       hops.push(recalcHop(current, nh, fn, re, weights));
       if (nh === dst) break; current = nh;
     } else {
-      // No route in table — check if direct neighbour
       const nb = fn.neighbours || [];
       if (nb.includes(dst)) {
         hops.push(buildEndpointHop(current, dst, fn, weights));
-        break;
+      } else {
+        hops.push({ from: current, to: dst, protocol: '?', unreachable: true, node_decided: '?', changed: false, wifi_cost: null, ble_cost: null, cost: 0, latency: 0, power_cost: 0, rssi: -99, packet_loss: 1.0 });
       }
-      // No direct route → try routing through GATEWAY
-      // Both nodes are in health matrix = gateway can reach both
-      const dstNode = nodes[dst];
-      if (dstNode && !visited.has('GATEWAY')) {
-        // Hop 1: current → GATEWAY (using current node's metrics)
-        hops.push(buildEndpointHop(current, 'GATEWAY', fn, weights));
-        // Hop 2: GATEWAY → destination (using destination node's metrics)
-        hops.push(buildEndpointHop('GATEWAY', dst, dstNode, weights));
-        break;
-      }
-      // Truly unreachable
-      hops.push({ from: current, to: dst, protocol: '?', unreachable: true, node_decided: '?', changed: false, wifi_cost: null, ble_cost: null, cost: 0, latency: 0, power_cost: 0, rssi: -99, packet_loss: 1.0 });
       break;
     }
   }

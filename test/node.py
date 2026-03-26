@@ -37,11 +37,9 @@ WIFI_SSID      = "OnePlus13Equals14"       # Shared WiFi network name
 WIFI_PASSWORD  = "gkpm5847"   # Shared WiFi password
 
 # Cost function weights  (must sum to 1.0)
-# These can be updated at runtime via ROUTE_PREF packets from the dashboard
 W_LATENCY      = 0.5             # Higher = prioritise low latency
 W_PACKET_LOSS  = 0.3             # Higher = prioritise reliability
 W_POWER        = 0.2             # Higher = prioritise battery saving
-route_mode     = "balanced"      # Current optimisation mode name
 
 # Timing (seconds)
 HELLO_INTERVAL  = 5              # Neighbour discovery broadcast interval
@@ -702,8 +700,6 @@ def send_metrics():
         "ip"           : my_ip,
         "neighbours"   : list(set(n for (n, _) in link_stats.keys())),
         "routing_table": rt_snapshot,
-        "route_mode"   : route_mode,
-        "weights"      : {"w_latency": W_LATENCY, "w_packet_loss": W_PACKET_LOSS, "w_power": W_POWER},
         "metrics": {
             "wifi_avg_latency_ms": round(avg_w_lat, 2),
             "ble_avg_latency_ms" : round(avg_b_lat, 2),
@@ -738,7 +734,6 @@ def send_metrics():
 # ══════════════════════════════════════════════
 
 def process_wifi_packets():
-    global W_LATENCY, W_PACKET_LOSS, W_POWER, route_mode
     try:
         while True:
             data, addr   = udp_sock.recvfrom(2048)
@@ -810,34 +805,6 @@ def process_wifi_packets():
                     pkt["relayed_by"] = NODE_ID
                     udp_send(GATEWAY_IP, UDP_GW_PORT, pkt)
                     print(f"[Relay] Forwarded METRIC from {node_id} hop={hop}")
-
-            elif ptype == "ROUTE_PREF":
-                # ── Dashboard / server wants to change our routing weights ──
-                target = pkt.get("target", "")
-                if target == NODE_ID:
-                    new_wl = pkt.get("w_latency")
-                    new_wp = pkt.get("w_packet_loss")
-                    new_ww = pkt.get("w_power")
-                    new_mode = pkt.get("mode", "balanced")
-                    if new_wl is not None and new_wp is not None and new_ww is not None:
-                        W_LATENCY     = float(new_wl)
-                        W_PACKET_LOSS = float(new_wp)
-                        W_POWER       = float(new_ww)
-                        route_mode    = new_mode
-                        rebuild_routing_table()
-                        print(f"[RoutePref] Updated to {new_mode}: "
-                              f"L={W_LATENCY} P={W_PACKET_LOSS} W={W_POWER}")
-                        # ACK back to sender so dashboard knows it worked
-                        ack = {
-                            "type": "ROUTE_PREF_ACK",
-                            "node_id": NODE_ID,
-                            "mode": new_mode,
-                            "w_latency": W_LATENCY,
-                            "w_packet_loss": W_PACKET_LOSS,
-                            "w_power": W_POWER,
-                            "timestamp": time.time(),
-                        }
-                        udp_send(sender_ip, UDP_MESH_PORT, ack)
 
     except OSError:
         pass  # No data available – normal for non-blocking socket
@@ -938,7 +905,6 @@ def process_ble_buffer():
 def main():
     global last_hello_time, last_metric_time, last_ping_time
     global wifi_active, ble_active, my_ip, udp_sock
-    global W_LATENCY, W_PACKET_LOSS, W_POWER, route_mode
 
     print("╔══════════════════════════════════════════╗")
     print(f"║  Mesh Node  {NODE_ID:<8}  (Pico W)      ║")
@@ -986,9 +952,6 @@ def main():
                     if udp_sock is None:
                         setup_udp()
                     print(f"[WiFi] Connected  IP={my_ip}")
-                    # Immediately announce ourselves so gateway can
-                    # deliver any pending ROUTE_PREF commands
-                    broadcast_hello()
                 last_wifi_check = now
 
             # Every 60s: trigger a fresh reconnect attempt (non-blocking)

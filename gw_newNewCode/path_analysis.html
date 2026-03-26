@@ -380,26 +380,50 @@ async function applyToNodes() {
     const successCount = data.success_count || 0;
     const failCount = data.fail_count || 0;
 
+    // Count queued vs direct-sent
+    let queuedCount = 0, sentCount = 0;
+    for (const nid in results) {
+      if (results[nid].ok && results[nid].method === 'queued') queuedCount++;
+      else if (results[nid].ok) sentCount++;
+    }
+
     // Update node tags
     const tagContainer = document.getElementById('applyNodesList');
     tagContainer.innerHTML = '';
     for (const nodeId in results) {
       const tag = document.createElement('span');
-      const ok = results[nodeId].ok;
-      tag.className = 'apply-node-tag ' + (ok ? 'sent' : 'failed');
-      tag.textContent = nodeId + ' ' + (ok ? '✓' : '✕');
-      if (!ok) tag.title = results[nodeId].message || 'Failed';
+      const r = results[nodeId];
+      if (r.ok && r.method === 'queued') {
+        tag.className = 'apply-node-tag';
+        tag.style.background = 'var(--accent-orange-dim)';
+        tag.style.color = 'var(--accent-orange)';
+        tag.textContent = nodeId + ' ⏳ queued';
+        tag.title = r.message || 'Will apply when WiFi connects';
+      } else if (r.ok) {
+        tag.className = 'apply-node-tag sent';
+        tag.textContent = nodeId + ' ✓';
+      } else {
+        tag.className = 'apply-node-tag failed';
+        tag.textContent = nodeId + ' ✕';
+        tag.title = r.message || 'Failed';
+      }
       tagContainer.appendChild(tag);
     }
 
-    if (failCount === 0) {
+    if (failCount === 0 && queuedCount === 0) {
       btn.className = 'apply-btn success';
       btn.textContent = '✓ Applied to ' + successCount + ' Node' + (successCount > 1 ? 's' : '');
       showToast('All ' + successCount + ' node' + (successCount > 1 ? 's' : '') + ' updated to ' + profile.label + ' mode. Nodes will recalculate routes immediately.', 'success', 5000);
+    } else if (failCount === 0 && queuedCount > 0) {
+      btn.className = 'apply-btn success';
+      var msg = '';
+      if (sentCount > 0) msg = sentCount + ' sent, ';
+      msg += queuedCount + ' queued (BLE-only → will apply on WiFi reconnect)';
+      btn.textContent = '✓ ' + msg;
+      showToast(profile.label + ': ' + msg, 'success', 6000);
     } else if (successCount > 0) {
       btn.className = 'apply-btn error';
-      btn.textContent = successCount + ' sent, ' + failCount + ' failed';
-      // Show failure reasons
+      btn.textContent = sentCount + ' sent, ' + queuedCount + ' queued, ' + failCount + ' failed';
       var failMsgs = [];
       for (var nid in results) { if (!results[nid].ok) failMsgs.push(nid + ': ' + (results[nid].message || 'unknown')); }
       showToast('Partial: ' + failMsgs.join(', '), 'error', 6000);
