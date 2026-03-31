@@ -26,6 +26,8 @@ import socket
 import time
 import json
 import machine
+import hmac
+import hashlib
 from micropython import const
 
 # ══════════════════════════════════════════════
@@ -63,6 +65,7 @@ BLE_PKT_TYPE_METRIC = 0x02
 BLE_PKT_TYPE_PING   = 0x03
 BLE_PKT_TYPE_PONG   = 0x04
 
+SHARED_KEY = b"mesh_secret_2106"
 
 # ══════════════════════════════════════════════
 #  GLOBAL STATE
@@ -314,6 +317,21 @@ def valid_node_id(node_id):
         return False
     return True
 
+def sign_packet(pkt_dict):
+    """Add HMAC-SHA256 signature to outgoing packet."""
+    payload = json.dumps(pkt_dict, sort_keys=True).encode()
+    sig = hmac.new(SHARED_KEY, payload, hashlib.sha256).hexdigest()
+    pkt_dict["sig"] = sig
+    return pkt_dict
+
+def verify_packet(pkt_dict):
+    """Verify HMAC-SHA256 signature on incoming packet. Returns True if valid."""
+    sig = pkt_dict.pop("sig", None)
+    if not sig:
+        return False
+    payload = json.dumps(pkt_dict, sort_keys=True).encode()
+    expected = hmac.new(SHARED_KEY, payload, hashlib.sha256).hexdigest()
+    return sig == expected
 
 # ══════════════════════════════════════════════
 #  BLE IRQ  (hardware interrupt – keep minimal)
@@ -605,6 +623,7 @@ def broadcast_hello():
         "rssi"     : rssi,
         "routing"  : rt_share
     }
+    sign_packet(hello) 
     udp_broadcast(UDP_MESH_PORT, hello)
 
     # ── BLE Hello beacon ────────────────────────────────────────
@@ -641,6 +660,7 @@ def ping_all_neighbours():
             "timestamp" : now,
             "ticks_ms"  : time.ticks_ms()   # millisecond precision for RTT
         }
+        sign_packet(ping_pkt)
         ok = udp_send(lnk["ip"], UDP_MESH_PORT, ping_pkt)
         if ok:
             get_link(node_id, "WiFi")["sent_count"] += 1
@@ -720,6 +740,7 @@ def send_metrics():
             "ble_power_cost"     : round(avg_b_power, 4),
         }
     }
+    sign_packet(wifi_pkt)
     ok = udp_send(GATEWAY_IP, UDP_GW_PORT, wifi_pkt)
     if ok:
         get_link("GATEWAY", "WiFi")["sent_count"] += 1
@@ -753,7 +774,9 @@ def process_wifi_packets():
                 pkt = json.loads(data.decode())
             except Exception:
                 continue
-
+            if not verify_packet(pkt):
+                print(f"[UDP]  Dropped packet with invalid signature from {sender_ip}")
+                continue
             ptype   = pkt.get("type")
             node_id = pkt.get("node_id", "")
             if node_id == NODE_ID or not valid_node_id(node_id):
@@ -779,6 +802,7 @@ def process_wifi_packets():
                     "timestamp"         : recv_ts,
                     "ble_rssi_of_sender": get_link(node_id, "BLE")["rssi"]
                 }
+                sign_packet(pong)
                 udp_send(sender_ip, UDP_MESH_PORT, pong)
 
             elif ptype == "PONG":
@@ -842,6 +866,7 @@ def process_wifi_packets():
                             "w_power": W_POWER,
                             "timestamp": time.time(),
                         }
+                        sign_packet(ack)
                         udp_send(sender_ip, UDP_MESH_PORT, ack)
 
     except OSError as e:
