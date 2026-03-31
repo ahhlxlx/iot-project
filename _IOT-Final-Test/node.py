@@ -26,7 +26,6 @@ import socket
 import time
 import json
 import machine
-import hmac
 import hashlib
 from micropython import const
 
@@ -124,6 +123,25 @@ last_hello_time  = 0
 last_metric_time = 0
 last_ping_time   = 0
 
+def _hmac_sha256(key, msg):
+    """Pure MicroPython HMAC-SHA256 implementation."""
+    block_size = 64
+    # If key longer than block size, hash it first
+    if len(key) > block_size:
+        key = hashlib.sha256(key).digest()
+    # Pad key to block size
+    key = key + b'\x00' * (block_size - len(key))
+    # Inner and outer padding
+    ipad = bytes(b ^ 0x36 for b in key)
+    opad = bytes(b ^ 0x5C for b in key)
+    # HMAC = hash(opad + hash(ipad + msg))
+    inner = hashlib.sha256(ipad + msg).digest()
+    outer = hashlib.sha256(opad + inner).digest()
+    return outer
+
+def _hexdigest(b):
+    """Convert bytes to hex string (MicroPython has no .hexdigest() on raw bytes)."""
+    return ''.join('{:02x}'.format(x) for x in b)
 
 # ══════════════════════════════════════════════
 #  WIFI
@@ -318,19 +336,17 @@ def valid_node_id(node_id):
     return True
 
 def sign_packet(pkt_dict):
-    """Add HMAC-SHA256 signature to outgoing packet."""
     payload = json.dumps(pkt_dict, sort_keys=True).encode()
-    sig = hmac.new(SHARED_KEY, payload, hashlib.sha256).hexdigest()
+    sig = _hexdigest(_hmac_sha256(SHARED_KEY, payload))
     pkt_dict["sig"] = sig
     return pkt_dict
 
 def verify_packet(pkt_dict):
-    """Verify HMAC-SHA256 signature on incoming packet. Returns True if valid."""
     sig = pkt_dict.pop("sig", None)
     if not sig:
         return False
     payload = json.dumps(pkt_dict, sort_keys=True).encode()
-    expected = hmac.new(SHARED_KEY, payload, hashlib.sha256).hexdigest()
+    expected = _hexdigest(_hmac_sha256(SHARED_KEY, payload))
     return sig == expected
 
 # ══════════════════════════════════════════════
