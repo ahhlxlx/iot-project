@@ -336,7 +336,7 @@ def valid_node_id(node_id):
     return True
 
 def sign_packet(pkt_dict):
-    payload = json.dumps(pkt_dict, sort_keys=True).encode()
+    payload = json.dumps(pkt_dict).encode()
     sig = _hexdigest(_hmac_sha256(SHARED_KEY, payload))
     pkt_dict["sig"] = sig
     return pkt_dict
@@ -345,7 +345,7 @@ def verify_packet(pkt_dict):
     sig = pkt_dict.pop("sig", None)
     if not sig:
         return False
-    payload = json.dumps(pkt_dict, sort_keys=True).encode()
+    payload = json.dumps(pkt_dict).encode()
     expected = _hexdigest(_hmac_sha256(SHARED_KEY, payload))
     return sig == expected
 
