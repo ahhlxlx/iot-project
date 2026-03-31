@@ -69,7 +69,8 @@ NODE_TIMEOUT_SEC    = 60            # Mark node OFFLINE if no packet for this lo
 #  LOGGING
 # ─────────────────────────────────────────────
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG, 
+    # level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.FileHandler(LOG_FILE),
@@ -456,19 +457,19 @@ def udp_metric_listener():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((GATEWAY_LISTEN_IP, GATEWAY_PORT))
-    log.info(f"[UDP] Metric listener on port {GATEWAY_PORT}")
 
     while True:
         try:
-            data, addr = sock.recvfrom(4096)
-            sender_ip  = addr[0]
-            pkt        = json.loads(data.decode('utf-8'))
+            raw, addr = sock.recvfrom(4096)  # keep raw bytes
+            sender_ip = addr[0]
 
-            if not verify_packet(pkt):
+            if not verify_packet_raw(raw):   # verify BEFORE parsing
                 log.warning(f"[Security] Rejected invalid packet from {sender_ip}")
                 continue
 
-            ptype      = pkt.get("type")
+            pkt   = json.loads(raw.decode('utf-8'))
+            pkt.pop("sig", None)             # strip sig before processing
+            ptype = pkt.get("type")
             if ptype == "METRIC":
                 process_metric_packet(pkt, sender_ip)
             elif ptype == "HELLO":
@@ -477,7 +478,31 @@ def udp_metric_listener():
             log.warning(f"[UDP] Malformed JSON from {addr}")
         except Exception as e:
             log.error(f"[UDP] Metric listener error: {e}")
+            
+def verify_packet_raw(raw_bytes):
+    try:
+        pkt = json.loads(raw_bytes.decode('utf-8'))
+        sig = pkt.pop("sig", None)
+        if not sig:
+            log.warning("[Security] Packet missing 'sig' field entirely")
+            return False
 
+        payload  = json.dumps(pkt, sort_keys=True, separators=(',', ':')).encode()
+        expected = hmac.new(SHARED_KEY, payload, hashlib.sha256).hexdigest()
+
+        # ── Debug: log first 20 chars of each sig so you can spot the mismatch ──
+        log.debug(f"[Security] sig_received : {sig[:20]}...")
+        log.debug(f"[Security] sig_expected : {expected[:20]}...")
+        log.debug(f"[Security] payload_preview: {payload[:80]}")
+
+        match = hmac.compare_digest(sig, expected)
+        if not match:
+            log.warning(f"[Security] HMAC mismatch — received={sig[:20]}... expected={expected[:20]}...")
+            log.warning(f"[Security] Payload used for verify: {payload[:120]}")
+        return match
+    except Exception as e:
+        log.warning(f"[Security] verify_packet_raw exception: {e}")
+        return False
 
 # ─────────────────────────────────────────────
 #  UDP LISTENER – MESH PORT (hello broadcast)
@@ -491,13 +516,17 @@ def udp_mesh_listener():
 
     while True:
         try:
-            data, addr = sock.recvfrom(4096)
-            pkt        = json.loads(data.decode('utf-8'))
-            if not verify_packet(pkt):
-                log.warning(f"[Security] Rejected invalid packer from {addr[0]}")
+            raw, addr = sock.recvfrom(4096)
+            sender_ip = addr[0]
+
+            if not verify_packet_raw(raw):        # ← was verify_packet, now consistent
+                log.warning(f"[Security] Rejected invalid packet from {sender_ip}")
                 continue
+
+            pkt = json.loads(raw.decode('utf-8'))
+            pkt.pop("sig", None)
             if pkt.get("type") == "HELLO":
-                process_hello_packet(pkt, addr[0])
+                process_hello_packet(pkt, sender_ip)
         except Exception as e:
             log.error(f"[UDP] Mesh listener error: {e}")
 

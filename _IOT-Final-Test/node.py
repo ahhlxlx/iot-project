@@ -37,7 +37,7 @@ GATEWAY_IP     = "10.202.64.43"   # Raspberry Pi IP
 WIFI_SSID      = "OnePlus13Equals14"       # Shared WiFi network name
 WIFI_PASSWORD  = "gkpm5847"   # Shared WiFi password
 
-ENABLE_WIFI = False
+ENABLE_WIFI = True
 ENABLE_BLE = True
 
 # Cost function weights  (must sum to 1.0)
@@ -335,8 +335,43 @@ def valid_node_id(node_id):
         return False
     return True
 
+def _sorted_json(obj):
+    if isinstance(obj, dict):
+        items = ['"{}":{}'.format(k, _sorted_json(obj[k])) for k in sorted(obj.keys())]
+        return '{' + ','.join(items) + '}'
+    elif isinstance(obj, list):
+        return '[' + ','.join(_sorted_json(i) for i in obj) + ']'
+    elif isinstance(obj, str):
+        # Escape special characters to match CPython json.dumps exactly
+        s = obj.replace('\\', '\\\\').replace('"', '\\"')
+        s = s.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+        return '"' + s + '"'
+    elif isinstance(obj, bool):
+        return 'true' if obj else 'false'
+    elif obj is None:
+        return 'null'
+    elif isinstance(obj, float):
+        if obj != obj:          # NaN check
+            return 'null'
+        if obj == float('inf') or obj == float('-inf'):
+            return 'null'
+        # Format to match CPython: no trailing zeros beyond 1 decimal for whole numbers
+        if obj == int(obj) and abs(obj) < 1e15:
+            return '{:.1f}'.format(obj)
+        # For other floats use enough precision to match CPython's repr
+        formatted = '{:.10g}'.format(obj)
+        # Ensure there's a decimal point so it stays a float in JSON
+        if '.' not in formatted and 'e' not in formatted:
+            formatted += '.0'
+        return formatted
+    elif isinstance(obj, int):
+        return str(obj)
+    else:
+        return 'null'
+
 def sign_packet(pkt_dict):
-    payload = json.dumps(pkt_dict).encode()
+    pkt_dict.pop("sig", None)          # remove any stale sig first
+    payload = _sorted_json(pkt_dict).encode()
     sig = _hexdigest(_hmac_sha256(SHARED_KEY, payload))
     pkt_dict["sig"] = sig
     return pkt_dict
@@ -344,9 +379,13 @@ def sign_packet(pkt_dict):
 def verify_packet(pkt_dict):
     sig = pkt_dict.pop("sig", None)
     if not sig:
+        print(f"[HMAC] Missing sig! pkt keys={list(pkt_dict.keys())}")
         return False
-    payload = json.dumps(pkt_dict).encode()
+    payload = _sorted_json(pkt_dict).encode()
     expected = _hexdigest(_hmac_sha256(SHARED_KEY, payload))
+    if sig != expected:
+        print(f"[HMAC] FAIL sig={sig[:16]} exp = {expected[:16]}")
+        print(f"[HMAC] payload={payload[:80]}")
     return sig == expected
 
 # ══════════════════════════════════════════════
@@ -853,6 +892,7 @@ def process_wifi_packets():
                 if hop <= 10:
                     pkt["hop_count"]  = hop
                     pkt["relayed_by"] = NODE_ID
+                    sign_packet(pkt)
                     udp_send(GATEWAY_IP, UDP_GW_PORT, pkt)
                     print(f"[Relay] Forwarded METRIC from {node_id} hop={hop}")
 
@@ -958,6 +998,7 @@ def process_ble_buffer():
                             "ble_power_cost"     : min(1.0, max(0.05, (-adv_rssi - 50) / 40.0)),
                         }
                     }
+                    sign_packet(relay_pkt)
                     ok = udp_send(GATEWAY_IP, UDP_GW_PORT, relay_pkt)
                     if ok:
                         print(f"[Relay] BLE→WiFi: forwarded {node_id} metric to gateway")
@@ -981,16 +1022,16 @@ def process_ble_buffer():
                     "timestamp"         : now,
                     "ble_rssi_of_sender": adv_rssi
                 }
+                sign_packet(pong)
                 udp_send(wifi_ip, UDP_MESH_PORT, pong)
 
 
 # ══════════════════════════════════════════════
 #  MAIN LOOP
 # ══════════════════════════════════════════════
-
 def main():
     global last_hello_time, last_metric_time, last_ping_time
-    global wifi_active, ble_active, my_ip, udp_sock
+    global wifi_active, ble_active, my_ip, udp_sockr
     global W_LATENCY, W_PACKET_LOSS, W_POWER, route_mode
 
     print("╔══════════════════════════════════════════╗")
