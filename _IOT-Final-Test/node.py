@@ -31,8 +31,8 @@ from micropython import const
 # ══════════════════════════════════════════════
 #  ① NODE CONFIGURATION  ← edit per device
 # ══════════════════════════════════════════════
-NODE_ID        = "NODE_lx"       # Change to NODE_02, NODE_03 … for each Pico W
-GATEWAY_IP     = "10.200.176.43"   # Raspberry Pi IP
+NODE_ID        = "NODE_Ad"       # Change to NODE_02, NODE_03 … for each Pico W
+GATEWAY_IP     = "10.202.64.43"   # Raspberry Pi IP
 WIFI_SSID      = "OnePlus13Equals14"       # Shared WiFi network name
 WIFI_PASSWORD  = "gkpm5847"   # Shared WiFi password
 
@@ -991,7 +991,7 @@ def main():
         now = time.time()
 
         # ── WiFi background reconnect logic ──────────────────────
-        if ENABLE_WIFI and wifi_active:
+        if ENABLE_WIFI and not wifi_active:
             # Every 5s: check if the background connect attempt succeeded
             if now - last_wifi_check >= WIFI_CHECK_INTERVAL:
                 if wlan and wlan.isconnected():
