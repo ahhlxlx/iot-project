@@ -163,7 +163,7 @@ seq_tracker = {}   # { node_id: { last_seq, expected_seq } }
 
 def sign_packet(pkt_dict):
     """Add HMAC-SHA256 signature to outgoing packet."""
-    payload = json.dumps(pkt_dict, sort_keys=True).encode()
+    payload = json.dumps(pkt_dict).encode()
     sig = hmac.new(SHARED_KEY, payload, hashlib.sha256).hexdigest()
     pkt_dict["sig"] = sig
     return pkt_dict
@@ -173,7 +173,7 @@ def verify_packet(pkt_dict):
     sig = pkt_dict.pop("sig", None)
     if not sig:
         return False
-    payload = json.dumps(pkt_dict, sort_keys=True).encode()
+    payload = json.dumps(pkt_dict).encode()
     expected = hmac.new(SHARED_KEY, payload, hashlib.sha256).hexdigest()
     return sig == expected
 

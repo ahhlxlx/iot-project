@@ -32,12 +32,12 @@ from micropython import const
 # ══════════════════════════════════════════════
 #  ① NODE CONFIGURATION  ← edit per device
 # ══════════════════════════════════════════════
-NODE_ID        = "NODE_Ad"       # Change to NODE_02, NODE_03 … for each Pico W
+NODE_ID        = "NODE_lx"       # Change to NODE_02, NODE_03 … for each Pico W
 GATEWAY_IP     = "10.202.64.43"   # Raspberry Pi IP
 WIFI_SSID      = "OnePlus13Equals14"       # Shared WiFi network name
 WIFI_PASSWORD  = "gkpm5847"   # Shared WiFi password
 
-ENABLE_WIFI = True
+ENABLE_WIFI = False
 ENABLE_BLE = True
 
 # Cost function weights  (must sum to 1.0)
@@ -931,7 +931,9 @@ def process_ble_buffer():
                 # link seen for them), forward a metric packet to the
                 # gateway on their behalf so they appear in the Health Matrix.
                 wifi_key = (node_id, "WiFi")
-                sender_has_wifi = wifi_key in link_stats and link_stats[wifi_key]["last_seen"] > 0
+                sender_has_wifi = (wifi_key in link_stats and 
+                   link_stats[wifi_key]["last_seen"] > 0 and
+                   (time.time() - link_stats[wifi_key]["last_seen"]) < ROUTE_TIMEOUT)
                 if wifi_active and not sender_has_wifi:
                     relay_pkt = {
                         "type"        : "METRIC",
