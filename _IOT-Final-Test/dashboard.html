@@ -56,11 +56,7 @@
     z-index: 100;
     backdrop-filter: blur(12px);
   }
-  .header-left {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-  }
+  .header-left { display: flex; align-items: center; gap: 14px; }
   .logo {
     width: 36px; height: 36px;
     background: linear-gradient(135deg, var(--accent-cyan), var(--accent-green));
@@ -95,272 +91,466 @@
     padding: 16px 20px;
   }
   .summary-card .label {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 1.2px;
-    color: var(--text-muted);
-    margin-bottom: 6px;
+    font-size: 10px; text-transform: uppercase;
+    letter-spacing: 1.2px; color: var(--text-muted); margin-bottom: 6px;
   }
-  .summary-card .value {
-    font-size: 28px;
-    font-weight: 700;
-    line-height: 1.1;
-  }
-  .summary-card .sub {
-    font-size: 12px;
-    color: var(--text-secondary);
-    margin-top: 4px;
-  }
+  .summary-card .value { font-size: 28px; font-weight: 700; line-height: 1.1; }
+  .summary-card .sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
   .val-green { color: var(--accent-green); }
   .val-orange { color: var(--accent-orange); }
   .val-red { color: var(--accent-red); }
   .val-cyan { color: var(--accent-cyan); }
 
   /* ── TABS ────────────────────────────────── */
-  .tabs {
-    display: flex; gap: 2px;
-    padding: 0 28px;
-    margin-bottom: 20px;
-  }
+  .tabs { display: flex; gap: 2px; padding: 0 28px; margin-bottom: 20px; }
   .tab {
-    padding: 10px 22px;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text-secondary);
-    cursor: pointer;
-    border-radius: 8px 8px 0 0;
-    border: 1px solid transparent;
-    border-bottom: none;
-    transition: all 0.2s;
-    user-select: none;
+    padding: 10px 22px; font-size: 13px; font-weight: 500;
+    color: var(--text-secondary); cursor: pointer;
+    border-radius: 8px 8px 0 0; border: 1px solid transparent;
+    border-bottom: none; transition: all 0.2s; user-select: none;
   }
   .tab:hover { color: var(--text-primary); background: var(--bg-hover); }
-  .tab.active {
-    color: var(--text-primary);
-    background: var(--bg-card);
-    border-color: var(--border);
-  }
+  .tab.active { color: var(--text-primary); background: var(--bg-card); border-color: var(--border); }
 
   /* ── TAB PANELS ─────────────────────────── */
   .tab-panel { display: none; padding: 0 28px 28px; }
   .tab-panel.active { display: block; }
 
   /* ── NODE CARDS ─────────────────────────── */
-  .node-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
-    gap: 18px;
-  }
+  .node-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 18px; }
   .node-card {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    overflow: hidden;
-    transition: border-color 0.3s;
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 12px; overflow: hidden; transition: border-color 0.3s;
   }
   .node-card:hover { border-color: var(--border-active); }
-  .node-card-accent {
-    height: 3px;
-    background: linear-gradient(90deg, var(--accent-cyan), var(--accent-green));
-  }
-  .node-card-accent.degraded {
-    background: linear-gradient(90deg, var(--accent-orange), var(--accent-red));
-  }
+  .node-card-accent { height: 3px; background: linear-gradient(90deg, var(--accent-cyan), var(--accent-green)); }
+  .node-card-accent.degraded { background: linear-gradient(90deg, var(--accent-orange), var(--accent-red)); }
   .node-card-accent.offline { background: var(--accent-red); }
-
-  .node-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 16px 20px 10px;
-  }
+  .node-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px 10px; }
   .node-name { font-size: 16px; font-weight: 600; letter-spacing: 0.5px; }
   .node-badge {
-    font-size: 11px;
-    font-weight: 600;
-    padding: 3px 10px;
-    border-radius: 6px;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
+    font-size: 11px; font-weight: 600; padding: 3px 10px;
+    border-radius: 6px; text-transform: uppercase; letter-spacing: 0.8px;
   }
   .badge-online { background: var(--accent-green-dim); color: var(--accent-green); }
   .badge-degraded { background: var(--accent-orange-dim); color: var(--accent-orange); }
   .badge-offline { background: var(--accent-red-dim); color: var(--accent-red); }
 
   /* ── METRICS GRID ───────────────────────── */
-  .metrics-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
-    padding: 6px 20px;
-  }
-  .metric-box {
-    background: var(--bg-card-inner);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 12px 14px;
-  }
-  .metric-label {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    color: var(--text-muted);
-    margin-bottom: 4px;
-  }
-  .metric-value {
-    font-size: 20px;
-    font-weight: 700;
-    line-height: 1.2;
-  }
-  .metric-sub {
-    font-size: 11px;
-    color: var(--text-secondary);
-    margin-top: 2px;
-  }
+  .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 6px 20px; }
+  .metric-box { background: var(--bg-card-inner); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+  .metric-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); margin-bottom: 4px; }
+  .metric-value { font-size: 20px; font-weight: 700; line-height: 1.2; }
+  .metric-sub { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
   .metric-sub .w-val { color: var(--accent-cyan); }
   .metric-sub .b-val { color: var(--accent-purple); }
 
   /* ── ROUTE INFO ─────────────────────────── */
-  .route-section {
-    margin: 12px 20px;
-    background: var(--bg-card-inner);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 14px;
+  .route-section { margin: 12px 20px; background: var(--bg-card-inner); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  .route-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .route-header-left { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-secondary); }
+  .proto-badge { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 4px; text-transform: uppercase; }
+  .proto-wifi { background: var(--accent-cyan-dim); color: var(--accent-cyan); }
+  .proto-ble { background: var(--accent-purple-dim); color: var(--accent-purple); }
+  .route-cost { font-size: 13px; font-weight: 600; color: var(--accent-orange); }
+  .route-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 12px; }
+  .route-col-label { font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
+  .route-row { display: flex; justify-content: space-between; padding: 2px 0; color: var(--text-secondary); }
+  .route-row .rv { font-weight: 500; color: var(--text-primary); }
+  .node-footer {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 20px; font-size: 11px; color: var(--text-muted);
+    border-top: 1px solid var(--border);
   }
-  .route-header {
+  .score-bar-bg { width: 60px; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; display: inline-block; vertical-align: middle; margin-right: 6px; }
+  .score-bar-fill { height: 100%; border-radius: 2px; transition: width 0.5s; }
+
+  /* ── CHARTS TAB ─────────────────────────── */
+  .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .chart-container { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+  .chart-title { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 14px; text-transform: uppercase; letter-spacing: 0.8px; }
+  canvas { width: 100% !important; }
+
+  /* ── TOPOLOGY TAB ───────────────────────── */
+  .topology-container { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; min-height: 560px; padding: 20px; position: relative; }
+  .topo-svg { width: 100%; height: 520px; }
+
+  /* ── ROUTING TABLE ──────────────────────── */
+  .routing-table-section {
+    margin-top: 20px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .routing-table-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 10px;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-card-inner);
   }
-  .route-header-left {
-    display: flex; align-items: center; gap: 8px;
-    font-size: 12px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.8px;
+  .routing-table-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
     color: var(--text-secondary);
   }
-  .proto-badge {
-    font-size: 10px; font-weight: 700;
-    padding: 2px 8px; border-radius: 4px;
+  .routing-table-title-icon {
+    width: 20px; height: 20px;
+    background: var(--accent-cyan-dim);
+    border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px;
+    color: var(--accent-cyan);
+    font-weight: 700;
+  }
+  .routing-table-meta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .rt-filter-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .rt-filter-btn {
+    padding: 3px 10px;
+    font-size: 10px;
+    font-weight: 600;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: 'Space Grotesk', sans-serif;
     text-transform: uppercase;
+    letter-spacing: 0.6px;
   }
-  .proto-wifi { background: var(--accent-cyan-dim); color: var(--accent-cyan); }
-  .proto-ble { background: var(--accent-purple-dim); color: var(--accent-purple); }
-  .route-cost {
-    font-size: 13px; font-weight: 600;
-    color: var(--accent-orange);
-  }
-  .route-cols {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
+  .rt-filter-btn:hover { color: var(--text-primary); border-color: var(--border-active); }
+  .rt-filter-btn.active-all { background: var(--bg-hover); color: var(--text-primary); border-color: var(--border-active); }
+  .rt-filter-btn.active-wifi { background: var(--accent-cyan-dim); color: var(--accent-cyan); border-color: var(--accent-cyan); }
+  .rt-filter-btn.active-ble { background: var(--accent-purple-dim); color: var(--accent-purple); border-color: var(--accent-purple); }
+
+  .routing-table-scroll { overflow-x: auto; }
+  .routing-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: 'JetBrains Mono', monospace;
     font-size: 12px;
   }
-  .route-col-label {
-    font-weight: 600; margin-bottom: 6px;
-    display: flex; align-items: center; gap: 6px;
+  .routing-table thead tr {
+    background: var(--bg-card-inner);
+    border-bottom: 1px solid var(--border);
   }
-  .route-row {
-    display: flex;
-    justify-content: space-between;
-    padding: 2px 0;
-    color: var(--text-secondary);
+  .routing-table th {
+    padding: 10px 16px;
+    text-align: left;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.15s;
+    position: relative;
   }
-  .route-row .rv { font-weight: 500; color: var(--text-primary); }
+  .routing-table th:hover { color: var(--text-primary); }
+  .routing-table th.sort-asc::after { content: ' ↑'; color: var(--accent-cyan); font-size: 9px; }
+  .routing-table th.sort-desc::after { content: ' ↓'; color: var(--accent-cyan); font-size: 9px; }
+  .routing-table th.sort-active { color: var(--accent-cyan); }
 
+  .routing-table tbody tr {
+    border-bottom: 1px solid rgba(30,42,58,0.5);
+    transition: background 0.15s;
+  }
+  .routing-table tbody tr:last-child { border-bottom: none; }
+  .routing-table tbody tr:hover { background: var(--bg-hover); }
+  .routing-table td {
+    padding: 11px 16px;
+    vertical-align: middle;
+    white-space: nowrap;
+  }
 
-  /* ── NODE FOOTER ────────────────────────── */
-  .node-footer {
+  /* Cell variants */
+  .rt-node-id { font-weight: 600; color: var(--text-primary); font-size: 13px; }
+  .rt-next-hop { color: var(--text-secondary); }
+  .rt-status-badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 2px 8px; border-radius: 4px;
+    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px;
+  }
+  .rt-status-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .rt-online { background: var(--accent-green-dim); color: var(--accent-green); }
+  .rt-online .rt-status-dot { background: var(--accent-green); }
+  .rt-degraded { background: var(--accent-orange-dim); color: var(--accent-orange); }
+  .rt-degraded .rt-status-dot { background: var(--accent-orange); }
+  .rt-offline { background: var(--accent-red-dim); color: var(--accent-red); }
+  .rt-offline .rt-status-dot { background: var(--accent-red); }
+  .rt-proto { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+  .rt-proto-wifi { background: var(--accent-cyan-dim); color: var(--accent-cyan); }
+  .rt-proto-ble { background: var(--accent-purple-dim); color: var(--accent-purple); }
+  .rt-latency { color: var(--text-primary); }
+  .rt-latency-sub { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+  .rt-cost { color: var(--accent-orange); font-weight: 600; }
+  .rt-cost-bar {
+    display: block; width: 60px; height: 3px;
+    background: var(--border); border-radius: 2px; margin-top: 4px; overflow: hidden;
+  }
+  .rt-cost-bar-fill { height: 100%; border-radius: 2px; background: var(--accent-orange); }
+  .rt-rssi { color: var(--text-secondary); }
+  .rt-rssi-good { color: var(--accent-green); }
+  .rt-rssi-ok { color: var(--accent-orange); }
+  .rt-rssi-bad { color: var(--accent-red); }
+  .rt-loss { color: var(--text-secondary); }
+  .rt-loss-high { color: var(--accent-red); }
+  .rt-hops { color: var(--text-secondary); text-align: center; }
+  .rt-score-cell { display: flex; align-items: center; gap: 8px; }
+  .rt-score-mini-bar { width: 40px; height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; flex-shrink: 0; }
+  .rt-score-mini-fill { height: 100%; border-radius: 2px; }
+  .rt-power { color: var(--text-muted); }
+
+  .rt-empty {
+    text-align: center;
+    padding: 40px;
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+
+  .routing-table-footer {
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 10px 20px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-card-inner);
     font-size: 11px;
     color: var(--text-muted);
-    border-top: 1px solid var(--border);
+    font-family: 'JetBrains Mono', monospace;
   }
-  .score-bar-bg {
-    width: 60px; height: 4px;
-    background: var(--border);
-    border-radius: 2px;
+  .rt-legend {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .rt-legend-item { display: flex; align-items: center; gap: 5px; }
+  .rt-legend-dot { width: 6px; height: 6px; border-radius: 50%; }
+
+  /* ── HOP PATH TRACE ─────────────────────── */
+  .path-trace-section {
+    margin-top: 20px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
     overflow: hidden;
-    display: inline-block;
-    vertical-align: middle;
-    margin-right: 6px;
   }
-  .score-bar-fill {
-    height: 100%;
-    border-radius: 2px;
-    transition: width 0.5s;
+  .path-trace-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-card-inner);
   }
-
-  /* ── CHARTS TAB ─────────────────────────── */
-  .chart-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 18px;
-  }
-  .chart-container {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 20px;
-  }
-  .chart-title {
-    font-size: 13px;
-    font-weight: 600;
+  .path-trace-title {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 13px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.8px;
     color: var(--text-secondary);
-    margin-bottom: 14px;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
   }
-  canvas { width: 100% !important; }
+  .path-trace-title-icon {
+    width: 20px; height: 20px;
+    background: var(--accent-orange-dim);
+    border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; color: var(--accent-orange); font-weight: 700;
+  }
+  .path-trace-meta { font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; }
 
-  /* ── TOPOLOGY TAB ───────────────────────── */
-  .topology-container {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    min-height: 560px;
-    padding: 20px;
+  /* individual path row */
+  .path-row {
+    border-bottom: 1px solid rgba(30,42,58,0.5);
+    transition: background 0.15s;
+  }
+  .path-row:last-child { border-bottom: none; }
+  .path-row-summary {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    padding: 0;
+    cursor: pointer;
+    user-select: none;
+  }
+  .path-row-summary:hover .path-row-meta { background: var(--bg-hover); }
+
+  .path-row-meta {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 13px 20px;
+    flex: 1;
+    transition: background 0.15s;
+  }
+  .path-src-dst {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px; font-weight: 600;
+    color: var(--text-primary);
+    min-width: 240px;
+  }
+  .path-src-dst .p-arrow {
+    color: var(--text-muted); font-weight: 400; margin: 0 6px;
+  }
+  .path-badge {
+    font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 4px;
+    text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap;
+  }
+  .path-badge-hops { background: var(--accent-orange-dim); color: var(--accent-orange); }
+  .path-badge-direct { background: var(--accent-green-dim); color: var(--accent-green); }
+  .path-badge-bridge { background: rgba(167,139,250,0.2); color: var(--accent-purple); }
+  .path-total-lat { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text-secondary); }
+  .path-total-lat strong { color: var(--accent-cyan); }
+  .path-expand-btn {
+    width: 24px; height: 24px; border-radius: 4px; border: 1px solid var(--border);
+    background: transparent; color: var(--text-muted); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; flex-shrink: 0; margin-right: 20px;
+    transition: all 0.15s;
+  }
+  .path-expand-btn:hover { color: var(--text-primary); border-color: var(--border-active); }
+  .path-expand-btn.open { transform: rotate(180deg); color: var(--accent-cyan); border-color: var(--accent-cyan); }
+
+  /* expanded hop chain */
+  .path-detail {
+    display: none;
+    padding: 0 20px 16px 20px;
+  }
+  .path-detail.open { display: block; }
+  .hop-chain {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    flex-wrap: wrap;
+    padding: 14px 0 4px;
+    row-gap: 12px;
+  }
+  .hop-node {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 110px;
+  }
+  .hop-node-pill {
+    padding: 6px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--border-active);
+    background: var(--bg-card-inner);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; font-weight: 700;
+    color: var(--text-primary);
+    white-space: nowrap;
     position: relative;
   }
-  .topo-svg { width: 100%; height: 520px; }
-  .topo-node-circle {
-    cursor: pointer;
-    transition: r 0.3s;
+  .hop-node-pill.is-gw { border-color: var(--accent-green); color: var(--accent-green); }
+  .hop-node-pill.is-src { border-color: var(--accent-cyan); color: var(--accent-cyan); }
+  .hop-node-pill.is-dst { border-color: var(--accent-orange); color: var(--accent-orange); }
+  .hop-node-sub {
+    font-size: 9px; margin-top: 4px; color: var(--text-muted);
+    font-family: 'JetBrains Mono', monospace; text-align: center;
   }
-  .topo-node-circle:hover { r: 28; }
+  .hop-node-sub .hsub-proto { font-weight: 600; }
+  .hop-node-sub .hsub-wifi { color: var(--accent-cyan); }
+  .hop-node-sub .hsub-ble { color: var(--accent-purple); }
+
+  /* arrow between hops */
+  .hop-arrow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    padding-top: 8px;
+    min-width: 90px;
+    flex: 1;
+  }
+  .hop-arrow-line {
+    display: flex; align-items: center; width: 100%; position: relative;
+  }
+  .hop-arrow-track {
+    flex: 1; height: 2px; border-radius: 1px;
+  }
+  .hop-arrow-track.wifi { background: var(--accent-cyan); }
+  .hop-arrow-track.ble  { background: var(--accent-purple); }
+  .hop-arrow-head {
+    font-size: 12px; line-height: 1; margin-left: -2px;
+  }
+  .hop-arrow-head.wifi { color: var(--accent-cyan); }
+  .hop-arrow-head.ble  { color: var(--accent-purple); }
+  .hop-arrow-label {
+    margin-top: 4px; text-align: center;
+    font-family: 'JetBrains Mono', monospace; font-size: 9px;
+  }
+  .hop-arrow-label .al-proto { font-weight: 700; }
+  .hop-arrow-label .al-wifi { color: var(--accent-cyan); }
+  .hop-arrow-label .al-ble  { color: var(--accent-purple); }
+  .hop-arrow-label .al-lat  { color: var(--text-muted); margin-left: 4px; }
+  .hop-arrow-label .al-rssi { color: var(--text-muted); display: block; }
+
+  /* hop detail table below chain */
+  .hop-detail-table {
+    width: 100%; margin-top: 14px; border-collapse: collapse;
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+  }
+  .hop-detail-table th {
+    padding: 7px 14px; background: var(--bg-card-inner);
+    text-align: left; font-size: 9px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+  }
+  .hop-detail-table td {
+    padding: 8px 14px; border-bottom: 1px solid rgba(30,42,58,0.4);
+    vertical-align: middle;
+  }
+  .hop-detail-table tr:last-child td { border-bottom: none; }
+  .hop-detail-table tr:hover td { background: var(--bg-hover); }
+  .hdt-hop-num { color: var(--text-muted); text-align: center; }
+  .hdt-from { color: var(--accent-cyan); font-weight: 600; }
+  .hdt-to { color: var(--accent-orange); font-weight: 600; }
+  .hdt-arrow { color: var(--text-muted); }
+
+  .path-trace-empty {
+    text-align: center; padding: 40px;
+    color: var(--text-muted); font-size: 13px;
+  }
+  .path-trace-footer {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 20px; border-top: 1px solid var(--border);
+    background: var(--bg-card-inner); font-size: 10px;
+    color: var(--text-muted); font-family: 'JetBrains Mono', monospace;
+  }
 
   /* ── TOAST NOTIFICATIONS ────────────────── */
-  .toast-container {
-    position: fixed;
-    bottom: 24px;
-    right: 24px;
-    z-index: 1000;
-    display: flex;
-    flex-direction: column-reverse;
-    gap: 8px;
-  }
+  .toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 1000; display: flex; flex-direction: column-reverse; gap: 8px; }
   .toast {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 12px 18px;
-    font-size: 13px;
-    color: var(--text-primary);
-    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-    animation: toastIn 0.3s ease-out;
-    max-width: 340px;
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 18px; font-size: 13px; color: var(--text-primary);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4); animation: toastIn 0.3s ease-out; max-width: 340px;
   }
   .toast.success { border-left: 3px solid var(--accent-green); }
   .toast.error { border-left: 3px solid var(--accent-red); }
   .toast.info { border-left: 3px solid var(--accent-cyan); }
-  @keyframes toastIn {
-    from { opacity: 0; transform: translateY(12px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
+  @keyframes toastIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
 
   /* ── RESPONSIVE ─────────────────────────── */
   @media (max-width: 900px) {
@@ -453,20 +643,652 @@
     </div>
     <svg id="topoSvg" class="topo-svg"></svg>
   </div>
+
+  <!-- ── ROUTING TABLE ── -->
+  <div class="routing-table-section">
+    <div class="routing-table-header">
+      <div class="routing-table-title">
+        <div class="routing-table-title-icon">RT</div>
+        Routing Table
+      </div>
+      <div style="display:flex;align-items:center;gap:16px;">
+        <div class="rt-filter-group">
+          <button class="rt-filter-btn active-all" id="rtFilterAll" onclick="setRtFilter('all')">All</button>
+          <button class="rt-filter-btn" id="rtFilterWifi" onclick="setRtFilter('wifi')">WiFi</button>
+          <button class="rt-filter-btn" id="rtFilterBle" onclick="setRtFilter('ble')">BLE</button>
+          <button class="rt-filter-btn" id="rtFilterOnline" onclick="setRtFilter('online')">Online</button>
+        </div>
+        <div class="routing-table-meta">
+          <span id="rtRowCount">0 routes</span>
+          <span>·</span>
+          <span id="rtUpdateTime">—</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="routing-table-scroll">
+      <table class="routing-table">
+        <thead>
+          <tr>
+            <th onclick="sortRtBy('id')" id="th-id">Node</th>
+            <th onclick="sortRtBy('status')" id="th-status">Status</th>
+            <th onclick="sortRtBy('proto')" id="th-proto">Protocol</th>
+            <th onclick="sortRtBy('nextHop')" id="th-nextHop">Next Hop</th>
+            <th onclick="sortRtBy('hops')" id="th-hops">Hops</th>
+            <th onclick="sortRtBy('latency')" id="th-latency">Latency</th>
+            <th onclick="sortRtBy('rssi')" id="th-rssi">RSSI</th>
+            <th onclick="sortRtBy('loss')" id="th-loss">Pkt Loss</th>
+            <th onclick="sortRtBy('power')" id="th-power">Power</th>
+            <th onclick="sortRtBy('cost')" id="th-cost">Route Cost</th>
+            <th onclick="sortRtBy('score')" id="th-score">Health</th>
+            <th>Mode</th>
+          </tr>
+        </thead>
+        <tbody id="routingTableBody">
+          <tr><td colspan="12" class="rt-empty">Waiting for node data…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="routing-table-footer">
+      <div class="rt-legend">
+        <div class="rt-legend-item"><div class="rt-legend-dot" style="background:var(--accent-green)"></div> Online</div>
+        <div class="rt-legend-item"><div class="rt-legend-dot" style="background:var(--accent-orange)"></div> Degraded</div>
+        <div class="rt-legend-item"><div class="rt-legend-dot" style="background:var(--accent-red)"></div> Offline</div>
+        <div class="rt-legend-item"><span style="display:inline-block;width:18px;height:2px;background:var(--accent-cyan);vertical-align:middle;margin-right:4px;border-radius:1px;"></span> WiFi</div>
+        <div class="rt-legend-item"><span style="display:inline-block;width:18px;height:2px;background:var(--accent-purple);vertical-align:middle;margin-right:4px;border-radius:1px;"></span> Bluetooth</div>
+      </div>
+      <span style="font-size:10px;">Click column headers to sort · Cost = weighted(latency, loss, power)</span>
+    </div>
+  </div>
+</div>
+
+  <!-- ── HOP PATH TRACE ── -->
+  <div class="path-trace-section">
+    <div class="path-trace-header">
+      <div class="path-trace-title">
+        <div class="path-trace-title-icon">↝</div>
+        Hop Path Trace
+      </div>
+      <div class="path-trace-meta">
+        <span id="ptPathCount">0 paths</span>
+        <span style="margin:0 6px">·</span>
+        <span style="color:var(--accent-cyan)">■</span> WiFi
+        <span style="margin-left:10px;color:var(--accent-purple)">■</span> Bluetooth
+        <span style="margin-left:10px;">· click row to expand</span>
+      </div>
+    </div>
+    <div id="pathTraceBody">
+      <div class="path-trace-empty">Waiting for node data…</div>
+    </div>
+    <div class="path-trace-footer">
+      <span>Paths reconstructed by following next_hop pointers through the node graph</span>
+      <span>SRC = source &nbsp;·&nbsp; DST = destination &nbsp;·&nbsp; GW = gateway</span>
+    </div>
+  </div>
 </div>
 
 <!-- TOASTS -->
 <div class="toast-container" id="toastContainer"></div>
 
-<!-- Chart.js CDN -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 
 <script>
-// Human-readable protocol label
+// ══════════════════════════════════════════════
+//  HELPERS
+// ══════════════════════════════════════════════
 function protoLabel(p) {
   if (!p) return '?';
   if (p === 'BLE' || p === 'BLE-Direct' || p === 'BLE-only' || (p && p.includes('BLE'))) return 'Bluetooth';
   return p;
+}
+function fmtMs(v) { return (v != null && v > 0) ? v.toFixed(1) + 'ms' : '—'; }
+function fmtDec(v, dp) { return (v != null && v > 0) ? v.toFixed(dp) : '—'; }
+
+function rssiClass(r) {
+  if (r == null || r <= -99) return 'rt-rssi';
+  if (r >= -65) return 'rt-rssi-good';
+  if (r >= -80) return 'rt-rssi-ok';
+  return 'rt-rssi-bad';
+}
+
+// ══════════════════════════════════════════════
+//  ROUTING TABLE STATE
+// ══════════════════════════════════════════════
+let rtSortKey = 'cost';
+let rtSortDir = 'asc';  // 'asc' | 'desc'
+let rtFilter  = 'all';  // 'all' | 'wifi' | 'ble' | 'online'
+let rtRows    = [];     // last-built row data
+
+function setRtFilter(f) {
+  rtFilter = f;
+  ['All','Wifi','Ble','Online'].forEach(n => {
+    const btn = document.getElementById('rtFilter' + n);
+    if (btn) btn.className = 'rt-filter-btn';
+  });
+  const activeMap = { all: 'active-all', wifi: 'active-wifi', ble: 'active-ble', online: 'active-all' };
+  const btn = document.getElementById('rtFilter' + f.charAt(0).toUpperCase() + f.slice(1));
+  if (btn) btn.classList.add(activeMap[f] || 'active-all');
+  renderRtBody();
+}
+
+function sortRtBy(key) {
+  if (rtSortKey === key) {
+    rtSortDir = rtSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    rtSortKey = key;
+    rtSortDir = 'asc';
+  }
+  // Update header classes
+  document.querySelectorAll('.routing-table th').forEach(th => {
+    th.classList.remove('sort-asc', 'sort-desc', 'sort-active');
+  });
+  const activeHeader = document.getElementById('th-' + key);
+  if (activeHeader) {
+    activeHeader.classList.add('sort-active', rtSortDir === 'asc' ? 'sort-asc' : 'sort-desc');
+  }
+  renderRtBody();
+}
+
+// ══════════════════════════════════════════════
+//  BUILD ROUTING TABLE ROW DATA FROM WS PAYLOAD
+// ══════════════════════════════════════════════
+function buildRtRows(data) {
+  const nodes = data.health_matrix?.nodes || {};
+  const rows = [];
+
+  Object.keys(nodes).sort().forEach(id => {
+    const n = nodes[id];
+    const metrics = n.metrics || {};
+    const rt = n.routing_table || {};
+    const rtKeys = Object.keys(rt);
+    const bestRoute = rtKeys.length ? rt[rtKeys[0]] : null;
+
+    const weights = n.weights || { w_latency: 0.5, w_packet_loss: 0.3, w_power: 0.2 };
+    function computeCost(lat, loss, power) {
+      return weights.w_latency * (lat / 100.0) + weights.w_packet_loss * loss + weights.w_power * power;
+    }
+    function estimateBleLat(rssi) {
+      if (rssi <= -99) return 0;
+      return Math.max(20, Math.min(120, (rssi + 40) * -1.375 + 25));
+    }
+
+    const bestProto = bestRoute?.best_protocol || n.protocol || '—';
+    const wRssi = metrics.wifi_rssi ?? n.rssi ?? -99;
+    const bRssi = metrics.ble_rssi ?? -99;
+
+    let wLat = bestRoute?.wifi_lat ?? (metrics.wifi_avg_latency_ms || 0);
+    let bLat = bestRoute?.ble_lat  ?? (metrics.ble_avg_latency_ms  || 0);
+    if (wLat === 0 && wRssi > -99) wLat = n.avg_latency_ms || 0;
+    if (bLat === 0 && bRssi > -99) bLat = estimateBleLat(bRssi);
+    if (wLat === 0 && bestRoute?.avg_latency_ms > 0 && bestProto.includes('WiFi')) wLat = bestRoute.avg_latency_ms;
+    if (bLat === 0 && bestRoute?.avg_latency_ms > 0 && bestProto.includes('BLE'))  bLat = bestRoute.avg_latency_ms;
+
+    const wLoss = metrics.wifi_packet_loss ?? 0;
+    const bLoss = metrics.ble_packet_loss ?? 0;
+    const activeRssi = bestProto.includes('BLE') ? bRssi : wRssi;
+    const activeLoss = bestProto.includes('BLE') ? bLoss : wLoss;
+    const activeLat  = bestProto.includes('BLE') ? bLat  : wLat;
+
+    const wifiAvail = wRssi > -99 || wLat > 0;
+    const bleAvail  = bRssi > -99 || bLat > 0;
+    let wPower = wifiAvail ? (metrics.wifi_power_cost || Math.min(1.0, Math.max(0.05, (-wRssi - 50) / 40.0))) : 0;
+    let bPower = bleAvail  ? (metrics.ble_power_cost  || Math.min(1.0, Math.max(0.05, (-bRssi - 50) / 40.0))) : 0;
+    const activePower = bestProto.includes('BLE') ? bPower : wPower;
+
+    let wCost = bestRoute?.wifi_cost ?? (wifiAvail && wLat > 0 ? computeCost(wLat, wLoss, wPower) : null);
+    let bCost = bestRoute?.ble_cost  ?? (bleAvail  && bLat > 0 ? computeCost(bLat, bLoss, bPower) : null);
+    let bestCost = bestRoute?.cost ?? null;
+    if (bestCost == null) {
+      if (bestProto.includes('WiFi') && wCost != null) bestCost = wCost;
+      else if (bestProto.includes('BLE') && bCost != null) bestCost = bCost;
+      else if (wCost != null && bCost != null) bestCost = Math.min(wCost, bCost);
+      else bestCost = wCost ?? bCost;
+    }
+
+    const dispLat = n.avg_latency_ms || activeLat || (bestRoute?.avg_latency_ms ?? 0);
+    const nextHop = bestRoute?.next_hop || 'direct';
+    const hops    = n.hop_count || 0;
+    const score   = n.health_score ?? 0;
+    const mode    = n.route_mode || 'balanced';
+
+    rows.push({
+      id, status: n.status || 'OFFLINE',
+      proto: bestProto, nextHop, hops,
+      latency: dispLat, wLat, bLat,
+      rssi: activeRssi, wRssi, bRssi,
+      loss: activeLoss, wLoss, bLoss,
+      power: activePower,
+      cost: bestCost, wCost, bCost,
+      score, mode,
+    });
+  });
+
+  return rows;
+}
+
+function renderRoutingTable(data) {
+  rtRows = buildRtRows(data);
+  document.getElementById('rtUpdateTime').textContent = data.timestamp || '—';
+  renderRtBody();
+}
+
+function renderRtBody() {
+  const body = document.getElementById('routingTableBody');
+  if (!body) return;
+
+  // Filter
+  let visible = rtRows.filter(r => {
+    if (rtFilter === 'wifi')   return !r.proto.includes('BLE');
+    if (rtFilter === 'ble')    return r.proto.includes('BLE');
+    if (rtFilter === 'online') return r.status === 'ONLINE';
+    return true;
+  });
+
+  // Sort
+  visible.sort((a, b) => {
+    let av = a[rtSortKey], bv = b[rtSortKey];
+    if (typeof av === 'string') av = av.toLowerCase();
+    if (typeof bv === 'string') bv = bv.toLowerCase();
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (av < bv) return rtSortDir === 'asc' ? -1 : 1;
+    if (av > bv) return rtSortDir === 'asc' ? 1  : -1;
+    return 0;
+  });
+
+  document.getElementById('rtRowCount').textContent = `${visible.length} route${visible.length !== 1 ? 's' : ''}`;
+
+  if (!visible.length) {
+    body.innerHTML = `<tr><td colspan="12" class="rt-empty">No routes match the current filter.</td></tr>`;
+    return;
+  }
+
+  const maxCost = Math.max(...visible.map(r => r.cost ?? 0), 0.0001);
+
+  body.innerHTML = visible.map(r => {
+    const statusKey  = r.status.toLowerCase();
+    const statusCls  = `rt-${statusKey}`;
+    const isWifi     = !r.proto.includes('BLE');
+    const protoCls   = isWifi ? 'rt-proto-wifi' : 'rt-proto-ble';
+    const protoTxt   = isWifi ? 'WiFi' : 'Bluetooth';
+
+    // RSSI display: show both W and BLE sub-line
+    const rssiMain   = r.rssi > -99 ? r.rssi + ' dBm' : '—';
+    const rssiCls    = rssiClass(r.rssi);
+    const rssiSub    = `<div class="rt-latency-sub"><span style="color:var(--accent-cyan)">W:${r.wRssi > -99 ? r.wRssi : '—'}</span>&nbsp;<span style="color:var(--accent-purple)">B:${r.bRssi > -99 ? Math.round(r.bRssi) : '—'}</span></div>`;
+
+    // Latency sub-line
+    const latMain    = r.latency > 0 ? r.latency.toFixed(1) + ' ms' : '—';
+    const latSub     = `<div class="rt-latency-sub"><span style="color:var(--accent-cyan)">W:${fmtMs(r.wLat)}</span>&nbsp;<span style="color:var(--accent-purple)">B:${fmtMs(r.bLat)}</span></div>`;
+
+    // Loss
+    const lossPct    = (r.loss * 100).toFixed(1) + '%';
+    const lossCls    = r.loss > 0.05 ? 'rt-loss-high' : 'rt-loss';
+
+    // Cost bar
+    const costPct    = r.cost != null ? Math.min(100, (r.cost / maxCost) * 100) : 0;
+    const costTxt    = r.cost != null ? r.cost.toFixed(4) : '—';
+
+    // Score
+    const scoreColor = r.score >= 70 ? 'var(--accent-green)' : r.score >= 40 ? 'var(--accent-orange)' : 'var(--accent-red)';
+
+    // Mode badge color
+    const modeCols   = { balanced: 'var(--accent-cyan)', performance: 'var(--accent-green)', power_save: 'var(--accent-purple)', reliability: 'var(--accent-orange)' };
+    const modeColor  = modeCols[r.mode] || 'var(--text-muted)';
+
+    return `<tr>
+      <td class="rt-node-id mono">${r.id}</td>
+      <td>
+        <span class="rt-status-badge ${statusCls}">
+          <span class="rt-status-dot"></span>${r.status}
+        </span>
+      </td>
+      <td><span class="rt-proto ${protoCls}">${protoTxt}</span></td>
+      <td class="rt-next-hop">${r.nextHop}</td>
+      <td class="rt-hops">${r.hops}</td>
+      <td class="rt-latency">${latMain}${latSub}</td>
+      <td class="${rssiCls}">${rssiMain}${rssiSub}</td>
+      <td class="${lossCls}">${lossPct}</td>
+      <td class="rt-power">${r.power > 0 ? r.power.toFixed(3) : '—'}</td>
+      <td class="rt-cost">
+        ${costTxt}
+        <span class="rt-cost-bar"><span class="rt-cost-bar-fill" style="width:${costPct.toFixed(1)}%"></span></span>
+      </td>
+      <td>
+        <div class="rt-score-cell">
+          <div class="rt-score-mini-bar"><div class="rt-score-mini-fill" style="width:${r.score}%;background:${scoreColor}"></div></div>
+          <span style="color:${scoreColor};font-size:11px;">${r.score}</span>
+        </div>
+      </td>
+      <td style="color:${modeColor};font-size:10px;text-transform:uppercase;letter-spacing:0.5px;">${r.mode}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ══════════════════════════════════════════════
+//  HOP PATH TRACE
+// ══════════════════════════════════════════════
+
+// Given all nodes, trace the hop chain from srcId toward dstId.
+// Returns an array of hop objects: { from, to, protocol, latency, rssi }
+// The chain follows next_hop pointers. We look in the source node's
+// routing_table for a dst-specific entry first, then fall back to the
+// node's general next_hop (toward GATEWAY), stopping once we land on dstId.
+function traceHopChain(srcId, dstId, nodes, maxHops = 8) {
+  const hops = [];
+  let current = srcId;
+  const visited = new Set([srcId]);
+
+  for (let i = 0; i < maxHops; i++) {
+    if (current === dstId) break;
+
+    const node = nodes[current];
+    if (!node) break;
+
+    const rt = node.routing_table || {};
+    const metrics = node.metrics || {};
+
+    // Try routing table entry for the exact destination first
+    let nextHop = null, protocol = null, latency = 0, rssi = -99;
+
+    if (rt[dstId]) {
+      const entry = rt[dstId];
+      nextHop  = entry.next_hop;
+      protocol = entry.best_protocol || entry.protocol || node.protocol || 'WiFi';
+      latency  = entry.avg_latency_ms || entry.latency || 0;
+    }
+
+    // Fall back: use the node's general next_hop toward GATEWAY
+    if (!nextHop) {
+      // Pick the first routing table entry (usually GATEWAY or a bridge node)
+      const rtKeys = Object.keys(rt);
+      if (rtKeys.length) {
+        const entry = rt[rtKeys[0]];
+        nextHop  = entry.next_hop || 'GATEWAY';
+        protocol = entry.best_protocol || entry.protocol || node.protocol || 'WiFi';
+        latency  = entry.avg_latency_ms || entry.latency || 0;
+      } else {
+        nextHop  = 'GATEWAY';
+        protocol = node.protocol || 'WiFi';
+        latency  = node.avg_latency_ms || 0;
+      }
+    }
+
+    // Determine per-hop latency and RSSI based on protocol
+    const isBLE = protocol && protocol.includes('BLE');
+    if (latency === 0) {
+      latency = isBLE
+        ? (metrics.ble_avg_latency_ms  || 0)
+        : (metrics.wifi_avg_latency_ms || node.avg_latency_ms || 0);
+    }
+    rssi = isBLE
+      ? (metrics.ble_rssi  ?? -99)
+      : (metrics.wifi_rssi ?? node.rssi ?? -99);
+
+    if (!nextHop || visited.has(nextHop)) break;
+    visited.add(nextHop);
+
+    hops.push({ from: current, to: nextHop, protocol, latency, rssi });
+    current = nextHop;
+
+    if (current === dstId) break;
+  }
+
+  return hops;
+}
+
+// Build all interesting path entries from the node graph:
+//  1. Each node → GATEWAY (any hops > 0 shown)
+//  2. Cross-node pairs where a protocol bridge is needed
+//     (one side WiFi-only, other side BLE-only, hops > 1)
+function buildPathEntries(data) {
+  const nodes = data.health_matrix?.nodes || {};
+  const ids   = Object.keys(nodes).sort();
+  const paths = [];
+
+  // Helper: does this node use only one protocol (single-mode)?
+  function nodeProto(id) {
+    const n = nodes[id];
+    if (!n) return null;
+    const p = n.protocol || '';
+    if (p.includes('BLE')) return 'BLE';
+    if (p.includes('WiFi') || p === 'WiFi') return 'WiFi';
+    return 'DUAL';
+  }
+
+  // ① Each node → GATEWAY
+  ids.forEach(srcId => {
+    const n = nodes[srcId];
+    if (!n) return;
+    const hops = traceHopChain(srcId, 'GATEWAY', nodes);
+    if (!hops.length) {
+      // Direct link – show as single hop
+      hops.push({
+        from: srcId, to: 'GATEWAY',
+        protocol: n.protocol || 'WiFi',
+        latency: n.avg_latency_ms || 0,
+        rssi: n.rssi ?? -99
+      });
+    }
+    const totalLat = hops.reduce((s, h) => s + (h.latency || 0), 0);
+    const protocols = [...new Set(hops.map(h => h.protocol || ''))];
+    const isBridge = protocols.some(p => p.includes('BLE')) && protocols.some(p => !p.includes('BLE'));
+    paths.push({
+      label: `${srcId} → GATEWAY`,
+      src: srcId, dst: 'GATEWAY',
+      hops, totalLat, isBridge,
+      hopCount: hops.length,
+    });
+  });
+
+  // ② Cross-node pairs that require a protocol bridge
+  for (let i = 0; i < ids.length; i++) {
+    for (let j = i + 1; j < ids.length; j++) {
+      const aId = ids[i], bId = ids[j];
+      const aProto = nodeProto(aId), bProto = nodeProto(bId);
+      // Only show pairs where protocols differ (bridge scenario)
+      if (aProto === bProto) continue;
+      if (aProto === 'DUAL' && bProto === 'DUAL') continue;
+
+      // Trace A→B (via GATEWAY as waypoint when needed)
+      // Strategy: A→GW hops + GW→B hops (reversed from B→GW)
+      const aToGw = traceHopChain(aId, 'GATEWAY', nodes);
+      const bToGw = traceHopChain(bId, 'GATEWAY', nodes);
+
+      // Reverse bToGw to get GW→B
+      const gwToB = bToGw.slice().reverse().map(h => ({
+        from: h.to, to: h.from,
+        protocol: h.protocol, latency: h.latency, rssi: h.rssi
+      }));
+
+      // A→GW already ends at GATEWAY, so chain is: aToGw + gwToB
+      const combined = [];
+
+      if (!aToGw.length) {
+        // Direct A→GW link
+        const n = nodes[aId];
+        combined.push({ from: aId, to: 'GATEWAY', protocol: n?.protocol || 'WiFi', latency: n?.avg_latency_ms || 0, rssi: n?.rssi ?? -99 });
+      } else {
+        combined.push(...aToGw);
+      }
+
+      if (!gwToB.length) {
+        // Direct GW→B link
+        const n = nodes[bId];
+        combined.push({ from: 'GATEWAY', to: bId, protocol: n?.protocol || 'WiFi', latency: n?.avg_latency_ms || 0, rssi: n?.rssi ?? -99 });
+      } else {
+        combined.push(...gwToB);
+      }
+
+      const totalLat = combined.reduce((s, h) => s + (h.latency || 0), 0);
+      const protocols = [...new Set(combined.map(h => h.protocol || ''))];
+      const isBridge = protocols.some(p => p.includes('BLE')) && protocols.some(p => !p.includes('BLE'));
+
+      paths.push({
+        label: `${aId} → ${bId}`,
+        src: aId, dst: bId,
+        hops: combined, totalLat, isBridge,
+        hopCount: combined.length,
+      });
+    }
+  }
+
+  // Sort: bridges first, then by hop count desc
+  paths.sort((a, b) => {
+    if (a.isBridge !== b.isBridge) return a.isBridge ? -1 : 1;
+    return b.hopCount - a.hopCount;
+  });
+
+  return paths;
+}
+
+function renderHopPaths(data) {
+  const paths = buildPathEntries(data);
+  const container = document.getElementById('pathTraceBody');
+  if (!container) return;
+
+  document.getElementById('ptPathCount').textContent = `${paths.length} path${paths.length !== 1 ? 's' : ''}`;
+
+  if (!paths.length) {
+    container.innerHTML = '<div class="path-trace-empty">No node data available.</div>';
+    return;
+  }
+
+  container.innerHTML = paths.map((p, idx) => {
+    const hopBadge = p.hopCount > 1
+      ? `<span class="path-badge path-badge-hops">${p.hopCount} hops</span>`
+      : `<span class="path-badge path-badge-direct">direct</span>`;
+    const bridgeBadge = p.isBridge
+      ? `<span class="path-badge path-badge-bridge">protocol bridge</span>`
+      : '';
+    const latTxt = p.totalLat > 0 ? `<strong>${p.totalLat.toFixed(1)} ms</strong> total` : '—';
+
+    // Visual hop chain
+    const chainHTML = buildChainHTML(p);
+    // Hop detail table
+    const tableHTML = buildHopTable(p);
+
+    return `
+      <div class="path-row" id="pr-${idx}">
+        <div class="path-row-summary" onclick="togglePath(${idx})">
+          <div class="path-row-meta">
+            <div class="path-src-dst mono">${p.src}<span class="p-arrow">→</span>${p.dst}</div>
+            ${hopBadge}
+            ${bridgeBadge}
+            <div class="path-total-lat">${latTxt}</div>
+          </div>
+          <button class="path-expand-btn" id="peb-${idx}">▾</button>
+        </div>
+        <div class="path-detail" id="pd-${idx}">
+          ${chainHTML}
+          ${tableHTML}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function togglePath(idx) {
+  const detail = document.getElementById('pd-' + idx);
+  const btn    = document.getElementById('peb-' + idx);
+  if (!detail) return;
+  const isOpen = detail.classList.toggle('open');
+  if (btn) btn.classList.toggle('open', isOpen);
+}
+
+function buildChainHTML(p) {
+  if (!p.hops.length) return '';
+
+  // Collect all nodes in order: first from of first hop, then each to
+  const nodeIds = [p.hops[0].from, ...p.hops.map(h => h.to)];
+
+  let html = '<div class="hop-chain">';
+
+  nodeIds.forEach((nodeId, i) => {
+    const isGW  = nodeId === 'GATEWAY';
+    const isSrc = i === 0;
+    const isDst = i === nodeIds.length - 1;
+    const pillCls = isGW ? 'is-gw' : isSrc ? 'is-src' : isDst ? 'is-dst' : '';
+    const labelTag = isSrc ? '(SRC)' : isDst ? '(DST)' : isGW ? '' : '(relay)';
+    const labelColor = isSrc ? 'var(--accent-cyan)' : isDst ? 'var(--accent-orange)' : isGW ? 'var(--accent-green)' : 'var(--text-muted)';
+
+    html += `<div class="hop-node">
+      <div class="hop-node-pill ${pillCls}">${nodeId}</div>
+      <div class="hop-node-sub" style="color:${labelColor}">${labelTag}</div>
+    </div>`;
+
+    // Arrow after every node except the last
+    if (i < p.hops.length) {
+      const hop = p.hops[i];
+      const isBLE = hop.protocol && hop.protocol.includes('BLE');
+      const protoKey = isBLE ? 'ble' : 'wifi';
+      const protoLabel = isBLE ? 'Bluetooth' : 'WiFi';
+      const latTxt  = hop.latency > 0 ? hop.latency.toFixed(1) + 'ms' : '—';
+      const rssiTxt = hop.rssi > -99 ? hop.rssi + 'dBm' : '—';
+
+      html += `<div class="hop-arrow">
+        <div class="hop-arrow-line">
+          <div class="hop-arrow-track ${protoKey}"></div>
+          <span class="hop-arrow-head ${protoKey}">▶</span>
+        </div>
+        <div class="hop-arrow-label">
+          <span class="al-proto al-${protoKey}">${protoLabel}</span><span class="al-lat">${latTxt}</span>
+          <span class="al-rssi">${rssiTxt}</span>
+        </div>
+      </div>`;
+    }
+  });
+
+  html += '</div>';
+  return html;
+}
+
+function buildHopTable(p) {
+  if (!p.hops.length) return '';
+
+  const rows = p.hops.map((h, i) => {
+    const isBLE = h.protocol && h.protocol.includes('BLE');
+    const protoCls = isBLE ? 'rt-proto-ble' : 'rt-proto-wifi';
+    const protoTxt = isBLE ? 'Bluetooth' : 'WiFi';
+    const rssiCl   = h.rssi >= -65 ? 'rt-rssi-good' : h.rssi >= -80 ? 'rt-rssi-ok' : 'rt-rssi-bad';
+    return `<tr>
+      <td class="hdt-hop-num">${i + 1}</td>
+      <td class="hdt-from">${h.from}</td>
+      <td class="hdt-arrow">→</td>
+      <td class="hdt-to">${h.to}</td>
+      <td><span class="rt-proto ${protoCls}">${protoTxt}</span></td>
+      <td style="color:var(--accent-cyan);font-family:'JetBrains Mono',monospace;">${h.latency > 0 ? h.latency.toFixed(1) + ' ms' : '—'}</td>
+      <td class="${rssiCl}" style="font-family:'JetBrains Mono',monospace;">${h.rssi > -99 ? h.rssi + ' dBm' : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  // Totals row
+  const totalLat = p.hops.reduce((s, h) => s + (h.latency || 0), 0);
+  const protocols = [...new Set(p.hops.map(h => h.protocol || ''))];
+
+  return `
+  <table class="hop-detail-table">
+    <thead>
+      <tr>
+        <th style="text-align:center;">#</th>
+        <th>From</th>
+        <th></th>
+        <th>To</th>
+        <th>Protocol</th>
+        <th>Latency</th>
+        <th>RSSI</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rows}
+      <tr style="background:var(--bg-card-inner);">
+        <td colspan="4" style="color:var(--text-muted);font-size:10px;text-transform:uppercase;letter-spacing:0.8px;padding:7px 14px;">Total (${p.hopCount} hop${p.hopCount !== 1 ? 's' : ''})</td>
+        <td style="font-size:10px;color:var(--text-muted);">${protocols.join(' + ')}</td>
+        <td style="color:var(--accent-orange);font-weight:600;font-family:'JetBrains Mono',monospace;">${totalLat > 0 ? totalLat.toFixed(1) + ' ms' : '—'}</td>
+        <td>—</td>
+      </tr>
+    </tbody>
+  </table>`;
 }
 
 // ══════════════════════════════════════════════
@@ -474,10 +1296,10 @@ function protoLabel(p) {
 // ══════════════════════════════════════════════
 let ws = null;
 let latestData = null;
-let charts = {};       // chart instances keyed by canvas id
+let charts = {};
 
 // ══════════════════════════════════════════════
-//  TOAST NOTIFICATIONS
+//  TOAST
 // ══════════════════════════════════════════════
 function showToast(msg, type = 'info', duration = 3500) {
   const c = document.getElementById('toastContainer');
@@ -496,26 +1318,18 @@ function connectWS() {
   ws = new WebSocket(`${proto}://${location.host}/ws`);
 
   ws.onopen = () => {
-    document.getElementById('gwStatus').innerHTML =
-      '<span class="status-dot online"></span> Connected';
+    document.getElementById('gwStatus').innerHTML = '<span class="status-dot online"></span> Connected';
   };
-
   ws.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data);
-      if (data.type === 'update') {
-        latestData = data;
-        renderAll(data);
-      }
+      if (data.type === 'update') { latestData = data; renderAll(data); }
     } catch(e) { console.error('WS parse error', e); }
   };
-
   ws.onclose = () => {
-    document.getElementById('gwStatus').innerHTML =
-      '<span class="status-dot offline"></span> Disconnected';
+    document.getElementById('gwStatus').innerHTML = '<span class="status-dot offline"></span> Disconnected';
     setTimeout(connectWS, 3000);
   };
-
   ws.onerror = () => ws.close();
 }
 
@@ -527,8 +1341,9 @@ function renderAll(data) {
   renderNodeCards(data);
   renderCharts(data);
   renderTopology(data);
+  renderRoutingTable(data);
+  renderHopPaths(data);
   document.getElementById('lastUpdate').textContent = data.timestamp || '—';
-
   const gwOnline = data.gateway_online;
   document.getElementById('gwStatus').innerHTML = gwOnline
     ? '<span class="status-dot online"></span> Gateway: Online'
@@ -536,32 +1351,23 @@ function renderAll(data) {
 }
 
 // ══════════════════════════════════════════════
-//  SUMMARY STRIP
+//  SUMMARY
 // ══════════════════════════════════════════════
 function renderSummary(data) {
   const nodes = data.health_matrix?.nodes || {};
   const ids = Object.keys(nodes);
   const total = ids.length;
-
-  let online = 0, degraded = 0, offline = 0;
-  let latSum = 0, latCount = 0;
-  let wifiRoutes = 0, bleRoutes = 0;
+  let online = 0, degraded = 0, offline = 0, latSum = 0, latCount = 0, wifiRoutes = 0, bleRoutes = 0;
 
   ids.forEach(id => {
     const n = nodes[id];
     if (n.status === 'ONLINE') online++;
     else if (n.status === 'DEGRADED') degraded++;
     else offline++;
-
     const lat = n.avg_latency_ms || 0;
     if (lat > 0) { latSum += lat; latCount++; }
-
-    // ✅ Count each NODE's own best protocol exactly once
-    // Use the node's protocol field, or fall back to its best routing
-    // table entry — but never loop over all routing table entries.
     const nodeProto = n.protocol || '';
-    if (!nodeProto) return; // skip if unknown
-
+    if (!nodeProto) return;
     if (nodeProto.includes('BLE')) bleRoutes++;
     else if (nodeProto === 'WiFi' || nodeProto.includes('WiFi')) wifiRoutes++;
   });
@@ -574,11 +1380,11 @@ function renderSummary(data) {
   document.getElementById('offlineNodes').textContent = offline;
   document.getElementById('offlinePct').textContent = total ? Math.round(offline/total*100) + '%' : '0%';
   document.getElementById('avgLatency').textContent = latCount ? (latSum/latCount).toFixed(1) + ' ms' : '—';
-
   const bestP = wifiRoutes >= bleRoutes ? 'WiFi' : 'Bluetooth';
   document.getElementById('bestProto').textContent = bestP;
   document.getElementById('protoSummary').textContent = `WiFi: ${wifiRoutes} | Bluetooth: ${bleRoutes} routes`;
 }
+
 // ══════════════════════════════════════════════
 //  NODE CARDS
 // ══════════════════════════════════════════════
@@ -586,130 +1392,57 @@ function renderNodeCards(data) {
   const nodes = data.health_matrix?.nodes || {};
   const grid = document.getElementById('nodeGrid');
   const ids = Object.keys(nodes).sort();
-
-  // Build or update cards
   ids.forEach(id => {
     const n = nodes[id];
     let card = document.getElementById(`card-${id}`);
-    if (!card) {
-      card = document.createElement('div');
-      card.className = 'node-card';
-      card.id = `card-${id}`;
-      grid.appendChild(card);
-    }
+    if (!card) { card = document.createElement('div'); card.className = 'node-card'; card.id = `card-${id}`; grid.appendChild(card); }
     card.innerHTML = buildNodeCardHTML(id, n, data);
   });
-
-  // Remove cards for nodes that disappeared
   Array.from(grid.children).forEach(el => {
     const nid = el.id.replace('card-', '');
     if (!nodes[nid]) el.remove();
   });
-
 }
-
-// ══════════════════════════════════════════════
-//  FORMAT HELPERS
-// ══════════════════════════════════════════════
-function fmtMs(v) { return (v != null && v > 0) ? v.toFixed(1) + 'ms' : '—'; }
-function fmtDec(v, dp) { return (v != null && v > 0) ? v.toFixed(dp) : '—'; }
 
 function buildNodeCardHTML(id, n, data) {
   const status = n.status || 'OFFLINE';
   const statusLower = status.toLowerCase();
   const badgeClass = `badge-${statusLower}`;
   const accentClass = statusLower === 'online' ? '' : statusLower;
-
   const metrics = n.metrics || {};
-
-  // Routing info — get the best route entry
   const rt = n.routing_table || {};
   const rtKeys = Object.keys(rt);
-  let bestRoute = null;
-  if (rtKeys.length > 0) {
-    bestRoute = rt[rtKeys[0]];
-  }
-
-  // ── Cost function (mirrors node.py compute_cost) ─────────────
-  // weights come from the node's current preference
+  let bestRoute = rtKeys.length ? rt[rtKeys[0]] : null;
   const weights = n.weights || { w_latency: 0.5, w_packet_loss: 0.3, w_power: 0.2 };
-  function computeCost(lat, loss, power) {
-    return weights.w_latency * (lat / 100.0) + weights.w_packet_loss * loss + weights.w_power * power;
-  }
-
-  // ── BLE latency estimate from RSSI (mirrors node.py) ─────────
-  // -40dBm → ~25ms, -80dBm → ~80ms
-  function estimateBleLat(rssi) {
-    if (rssi <= -99) return 0;
-    return Math.max(20, Math.min(120, (rssi + 40) * -1.375 + 25));
-  }
-
-  // ── Gather all sources ────────────────────────────────────────
+  function computeCost(lat, loss, power) { return weights.w_latency * (lat / 100.0) + weights.w_packet_loss * loss + weights.w_power * power; }
+  function estimateBleLat(rssi) { if (rssi <= -99) return 0; return Math.max(20, Math.min(120, (rssi + 40) * -1.375 + 25)); }
   const bestProto = bestRoute?.best_protocol || n.protocol || '—';
-
-  // RSSI
   const wRssi = metrics.wifi_rssi ?? n.rssi ?? -99;
   const bRssi = metrics.ble_rssi ?? -99;
-
-  // Latency: routing table > metrics > estimate from RSSI
   let wLat = bestRoute?.wifi_lat ?? (metrics.wifi_avg_latency_ms || 0);
   let bLat = bestRoute?.ble_lat  ?? (metrics.ble_avg_latency_ms  || 0);
-
-  // If WiFi latency still 0 but node has WiFi data, use top-level
   if (wLat === 0 && wRssi > -99) wLat = n.avg_latency_ms || 0;
-  // If BLE latency still 0 but we have BLE RSSI, estimate it
   if (bLat === 0 && bRssi > -99) bLat = estimateBleLat(bRssi);
-  // If bestProto latency is in the general route field
   if (wLat === 0 && bestRoute?.avg_latency_ms > 0 && bestProto.includes('WiFi')) wLat = bestRoute.avg_latency_ms;
   if (bLat === 0 && bestRoute?.avg_latency_ms > 0 && bestProto.includes('BLE'))  bLat = bestRoute.avg_latency_ms;
-
-  // Packet loss
   const wLoss = metrics.wifi_packet_loss ?? 0;
   const bLoss = metrics.ble_packet_loss ?? 0;
-
-  // Power cost — only estimate when that protocol is actually available.
-  // Do NOT fall back to bestRoute.power_cost for WiFi: that field holds the
-  // winner's power cost (could be BLE) and would wrongly show a WiFi power
-  // value when WiFi is down.
   const wifiAvail = wRssi > -99 || wLat > 0;
   const bleAvail  = bRssi > -99 || bLat > 0;
-
-  let wPower = 0;
-  if (wifiAvail) {
-    wPower = metrics.wifi_power_cost || 0;
-    if (wPower === 0) wPower = Math.min(1.0, Math.max(0.05, (-wRssi - 50) / 40.0));
-  }
-  // bPower: only if BLE is actually available
-  let bPower = 0;
-  if (bleAvail) {
-    bPower = metrics.ble_power_cost || 0;
-    if (bPower === 0) bPower = Math.min(1.0, Math.max(0.05, (-bRssi - 50) / 40.0));
-  }
-
-  // Costs: routing table > compute client-side from available data
-  let wCost = bestRoute?.wifi_cost ?? null;
-  let bCost = bestRoute?.ble_cost  ?? null;
-
-  // Compute costs only when that protocol is actually available
-  if (wCost == null && wifiAvail && wLat > 0) wCost = computeCost(wLat, wLoss, wPower);
-  if (bCost == null && bleAvail  && bLat > 0) bCost = computeCost(bLat, bLoss, bPower);
-
-  // Overall best cost
+  let wPower = wifiAvail ? (metrics.wifi_power_cost || Math.min(1.0, Math.max(0.05, (-wRssi - 50) / 40.0))) : 0;
+  let bPower = bleAvail  ? (metrics.ble_power_cost  || Math.min(1.0, Math.max(0.05, (-bRssi - 50) / 40.0))) : 0;
+  let wCost = bestRoute?.wifi_cost ?? (wifiAvail && wLat > 0 ? computeCost(wLat, wLoss, wPower) : null);
+  let bCost = bestRoute?.ble_cost  ?? (bleAvail  && bLat > 0 ? computeCost(bLat, bLoss, bPower) : null);
   let bestCost = bestRoute?.cost ?? null;
   if (bestCost == null) {
-    // Pick the cost matching the best protocol, or whichever is available
     if (bestProto.includes('WiFi') && wCost != null) bestCost = wCost;
     else if (bestProto.includes('BLE') && bCost != null) bestCost = bCost;
     else if (wCost != null && bCost != null) bestCost = Math.min(wCost, bCost);
     else bestCost = wCost ?? bCost;
   }
-
-  // Displayed latency
   const dispLat = n.avg_latency_ms || wLat || bLat || (bestRoute?.avg_latency_ms ?? 0);
-
   const score = n.health_score ?? 0;
   const scoreColor = score >= 70 ? 'var(--accent-green)' : score >= 40 ? 'var(--accent-orange)' : 'var(--accent-red)';
-
   const neighbours = n.neighbours || [];
   const hops = n.hop_count || 0;
 
@@ -719,7 +1452,6 @@ function buildNodeCardHTML(id, n, data) {
       <div class="node-name mono">${id}</div>
       <span class="node-badge ${badgeClass}">${status}</span>
     </div>
-
     <div class="metrics-grid">
       <div class="metric-box">
         <div class="metric-label">RSSI</div>
@@ -750,7 +1482,6 @@ function buildNodeCardHTML(id, n, data) {
         <div class="metric-value">${hops} / ${neighbours.length}</div>
       </div>
     </div>
-
     <div class="route-section">
       <div class="route-header">
         <div class="route-header-left">
@@ -774,8 +1505,6 @@ function buildNodeCardHTML(id, n, data) {
         </div>
       </div>
     </div>
-
-
     <div class="node-footer">
       <span>
         <span class="score-bar-bg">
@@ -785,57 +1514,41 @@ function buildNodeCardHTML(id, n, data) {
       </span>
       <span>${bestRoute ? protoLabel(bestRoute.best_protocol) + ' → ' + (bestRoute.next_hop || 'direct') : '—'}</span>
       <span>Proto: ${n.protocol || '—'}</span>
-    </div>
-  `;
+    </div>`;
 }
-
 
 // ══════════════════════════════════════════════
 //  CHARTS
 // ══════════════════════════════════════════════
 const chartColors = {
-  wifi: { border: '#06b6d4', bg: 'rgba(6,182,212,0.15)' },
-  ble:  { border: '#a78bfa', bg: 'rgba(167,139,250,0.15)' },
+  wifi:   { border: '#06b6d4', bg: 'rgba(6,182,212,0.15)' },
+  ble:    { border: '#a78bfa', bg: 'rgba(167,139,250,0.15)' },
   health: { border: '#22c55e', bg: 'rgba(34,197,94,0.15)' },
 };
-
 const commonChartOpts = {
-  responsive: true,
-  maintainAspectRatio: false,
-  animation: { duration: 400 },
-  plugins: {
-    legend: { labels: { color: '#8892a4', font: { family: 'JetBrains Mono', size: 11 } } },
-  },
+  responsive: true, maintainAspectRatio: false, animation: { duration: 400 },
+  plugins: { legend: { labels: { color: '#8892a4', font: { family: 'JetBrains Mono', size: 11 } } } },
   scales: {
-    x: { ticks: { color: '#5a6577', font: { family: 'JetBrains Mono', size: 10 }, maxTicksLimit: 10 },
-         grid: { color: 'rgba(30,42,58,0.5)' } },
-    y: { ticks: { color: '#5a6577', font: { family: 'JetBrains Mono', size: 10 } },
-         grid: { color: 'rgba(30,42,58,0.5)' } }
+    x: { ticks: { color: '#5a6577', font: { family: 'JetBrains Mono', size: 10 }, maxTicksLimit: 10 }, grid: { color: 'rgba(30,42,58,0.5)' } },
+    y: { ticks: { color: '#5a6577', font: { family: 'JetBrains Mono', size: 10 } }, grid: { color: 'rgba(30,42,58,0.5)' } }
   }
 };
-
 function renderCharts(data) {
   const history = data.history || {};
   const ids = Object.keys(history).sort();
   if (!ids.length) return;
-
-  // Latency & RSSI tab
   const chartGrid = document.getElementById('chartGrid');
   ids.forEach(id => {
     const h = history[id];
-    // Latency chart
     renderLineChart(chartGrid, `lat-${id}`, `${id} — Latency (ms)`, h.timestamps, [
       { label: 'WiFi', data: h.latency_wifi, ...chartColors.wifi },
       { label: 'Bluetooth', data: h.latency_ble, ...chartColors.ble },
     ]);
-    // RSSI chart
     renderLineChart(chartGrid, `rssi-${id}`, `${id} — RSSI (dBm)`, h.timestamps, [
       { label: 'WiFi', data: h.rssi_wifi, ...chartColors.wifi },
       { label: 'Bluetooth', data: h.rssi_ble, ...chartColors.ble },
     ]);
   });
-
-  // WiFi vs BLE tab
   const compareGrid = document.getElementById('compareGrid');
   ids.forEach(id => {
     const h = history[id];
@@ -848,261 +1561,130 @@ function renderCharts(data) {
     ]);
   });
 }
-
 function renderLineChart(container, canvasId, title, labels, datasets) {
   let wrapper = document.getElementById(`wrap-${canvasId}`);
   if (!wrapper) {
-    wrapper = document.createElement('div');
-    wrapper.className = 'chart-container';
-    wrapper.id = `wrap-${canvasId}`;
+    wrapper = document.createElement('div'); wrapper.className = 'chart-container'; wrapper.id = `wrap-${canvasId}`;
     wrapper.innerHTML = `<div class="chart-title">${title}</div><div style="height:200px"><canvas id="${canvasId}"></canvas></div>`;
     container.appendChild(wrapper);
   }
-
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
-
   if (charts[canvasId]) {
     const chart = charts[canvasId];
     chart.data.labels = labels;
-    datasets.forEach((ds, i) => {
-      if (chart.data.datasets[i]) {
-        chart.data.datasets[i].data = ds.data;
-      }
-    });
-    chart.update('none');
-    return;
+    datasets.forEach((ds, i) => { if (chart.data.datasets[i]) chart.data.datasets[i].data = ds.data; });
+    chart.update('none'); return;
   }
-
   charts[canvasId] = new Chart(canvas.getContext('2d'), {
     type: 'line',
-    data: {
-      labels: labels,
-      datasets: datasets.map(ds => ({
-        label: ds.label,
-        data: ds.data,
-        borderColor: ds.border,
-        backgroundColor: ds.bg,
-        borderWidth: 2,
-        pointRadius: 0,
-        tension: 0.3,
-        fill: true,
-      }))
-    },
+    data: { labels, datasets: datasets.map(ds => ({ label: ds.label, data: ds.data, borderColor: ds.border, backgroundColor: ds.bg, borderWidth: 2, pointRadius: 0, tension: 0.3, fill: true })) },
     options: { ...commonChartOpts }
   });
 }
 
+// ══════════════════════════════════════════════
+//  TOPOLOGY
+// ══════════════════════════════════════════════
 function renderTopology(data) {
   const nodes = data.health_matrix?.nodes || {};
   const edges = data.topology?.edges || [];
   const svg = document.getElementById('topoSvg');
   if (!svg) return;
-
   const ids = Object.keys(nodes).sort();
-  if (!ids.length) {
-    svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#5a6577" font-size="14">No nodes detected</text>';
-    return;
-  }
+  if (!ids.length) { svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#5a6577" font-size="14">No nodes detected</text>'; return; }
 
-  const W = svg.clientWidth || 900;
-  const H = svg.clientHeight || 460;
+  const W = svg.clientWidth || 900, H = svg.clientHeight || 460;
   const gwX = W / 2, gwY = H / 2;
-
   const positions = { GATEWAY: { x: gwX, y: gwY } };
   const radius = Math.min(W, H) * 0.42;
 
-  if (ids.length === 1) {
-    positions[ids[0]] = { x: gwX + radius, y: gwY };
-  } else if (ids.length === 2) {
-    positions[ids[0]] = { x: gwX - radius, y: gwY };
-    positions[ids[1]] = { x: gwX + radius, y: gwY };
-  } else {
-    ids.forEach((id, i) => {
-      const angle = (2 * Math.PI * i / ids.length) - Math.PI / 2;
-      positions[id] = {
-        x: gwX + radius * Math.cos(angle),
-        y: gwY + radius * Math.sin(angle),
-      };
-    });
-  }
+  if (ids.length === 1) { positions[ids[0]] = { x: gwX + radius, y: gwY }; }
+  else if (ids.length === 2) { positions[ids[0]] = { x: gwX - radius, y: gwY }; positions[ids[1]] = { x: gwX + radius, y: gwY }; }
+  else { ids.forEach((id, i) => { const a = (2 * Math.PI * i / ids.length) - Math.PI / 2; positions[id] = { x: gwX + radius * Math.cos(a), y: gwY + radius * Math.sin(a) }; }); }
 
-  let svgHTML = '';
-
-  svgHTML += `
+  let svgHTML = `
     <defs>
       <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
         <feGaussianBlur stdDeviation="3" result="blur"/>
         <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
       </filter>
-      <marker id="arrow-cyan" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto">
-        <path d="M0,0 L10,3 L0,6" fill="#06b6d4" opacity="0.7"/>
-      </marker>
-      <marker id="arrow-purple" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto">
-        <path d="M0,0 L10,3 L0,6" fill="#a78bfa" opacity="0.7"/>
-      </marker>
-      <marker id="arrow-dim" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto">
-        <path d="M0,0 L10,3 L0,6" fill="#2d3f56" opacity="0.5"/>
-      </marker>
+      <marker id="arrow-cyan" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto"><path d="M0,0 L10,3 L0,6" fill="#06b6d4" opacity="0.7"/></marker>
+      <marker id="arrow-purple" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto"><path d="M0,0 L10,3 L0,6" fill="#a78bfa" opacity="0.7"/></marker>
+      <marker id="arrow-dim" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto"><path d="M0,0 L10,3 L0,6" fill="#2d3f56" opacity="0.5"/></marker>
     </defs>`;
 
-  // ── Helper: place a label box along an edge, offset perpendicularly ──
   function edgeLabelHTML(fromPos, toPos, stroke, line1, line2) {
-    const dx = toPos.x - fromPos.x;
-    const dy = toPos.y - fromPos.y;
-    const len = Math.sqrt(dx * dx + dy * dy);
-    const ux = dx / len, uy = dy / len;
-
-    // 65% along the edge toward destination
-    const lx = fromPos.x + dx * 0.65;
-    const ly = fromPos.y + dy * 0.65;
-
-    // Perpendicular offset — push away from canvas center
+    const dx = toPos.x - fromPos.x, dy = toPos.y - fromPos.y;
+    const len = Math.sqrt(dx*dx + dy*dy);
+    const ux = dx/len, uy = dy/len;
+    const lx = fromPos.x + dx * 0.65, ly = fromPos.y + dy * 0.65;
     const perpScale = Math.min(42, Math.max(28, len * 0.12));
     const dot = (lx - gwX) * (-uy) + (ly - gwY) * ux;
     const sign = dot >= 0 ? 1 : -1;
-    const ox = -uy * perpScale * sign;
-    const oy =  ux * perpScale * sign;
-
+    const ox = -uy * perpScale * sign, oy = ux * perpScale * sign;
     const bw = 110, bh = 40;
-    let bx = lx + ox - bw / 2;
-    let by = ly + oy - bh / 2;
-    bx = Math.max(8, Math.min(W - bw - 8, bx));
-    by = Math.max(8, Math.min(H - bh - 8, by));
-    const mx = bx + bw / 2;
-
-    return `
-      <rect x="${bx}" y="${by}" width="${bw}" height="${bh}"
-        rx="6" fill="#111827" stroke="${stroke}" stroke-width="1" opacity="0.92"/>
-      <text x="${mx}" y="${by + 14}" text-anchor="middle"
-        fill="${stroke}" font-family="JetBrains Mono" font-size="9" font-weight="600">${line1}</text>
-      <text x="${mx}" y="${by + 28}" text-anchor="middle"
-        fill="#5a6577" font-family="JetBrains Mono" font-size="8">${line2}</text>`;
+    let bx = Math.max(8, Math.min(W-bw-8, lx+ox-bw/2));
+    let by = Math.max(8, Math.min(H-bh-8, ly+oy-bh/2));
+    const mx = bx + bw/2;
+    return `<rect x="${bx}" y="${by}" width="${bw}" height="${bh}" rx="6" fill="#111827" stroke="${stroke}" stroke-width="1" opacity="0.92"/>
+      <text x="${mx}" y="${by+14}" text-anchor="middle" fill="${stroke}" font-family="JetBrains Mono" font-size="9" font-weight="600">${line1}</text>
+      <text x="${mx}" y="${by+28}" text-anchor="middle" fill="#5a6577" font-family="JetBrains Mono" font-size="8">${line2}</text>`;
   }
 
-  // ── Draw edges from topology data ──
   const drawnEdges = new Set();
-
   edges.forEach(e => {
-    const fromPos = positions[e.from];
-    const toPos   = positions[e.to];
+    const fromPos = positions[e.from], toPos = positions[e.to];
     if (!fromPos || !toPos) return;
-
     const edgeKey = [e.from, e.to].sort().join('-');
     if (drawnEdges.has(edgeKey)) return;
     drawnEdges.add(edgeKey);
-
     const isRoute = e.cost !== undefined && e.cost !== null;
-
-    let stroke = '#1e2a3a';
-    let marker = 'url(#arrow-dim)';
-    let width = 1;
-    let dash = '6,4';
-    let opacity = 0.4;
-
+    let stroke = '#1e2a3a', marker = 'url(#arrow-dim)', width = 1, dash = '6,4', opacity = 0.4;
     if (isRoute) {
       const nodeProto = nodes[e.from]?.protocol || '';
       const bestProto = e.protocol || (nodeProto.includes('BLE') ? 'BLE' : 'WiFi');
       stroke  = bestProto.includes('BLE') ? '#a78bfa' : '#06b6d4';
       marker  = bestProto.includes('BLE') ? 'url(#arrow-purple)' : 'url(#arrow-cyan)';
-      width   = 2;
-      dash    = '';
-      opacity = 0.7;
+      width = 2; dash = ''; opacity = 0.7;
     }
-
-    const dx = toPos.x - fromPos.x;
-    const dy = toPos.y - fromPos.y;
-    const len = Math.sqrt(dx * dx + dy * dy);
-    const ux = dx / len, uy = dy / len;
-    const fromR = (e.from === 'GATEWAY') ? 30 : 32;
-    const toR   = (e.to   === 'GATEWAY') ? 30 : 32;
-    const x1 = fromPos.x + ux * fromR;
-    const y1 = fromPos.y + uy * fromR;
-    const x2 = toPos.x   - ux * toR;
-    const y2 = toPos.y   - uy * toR;
-
-    svgHTML += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"
-      stroke="${stroke}" stroke-width="${width}"
-      stroke-dasharray="${dash}" opacity="${opacity}"
-      marker-end="${marker}"/>`;
-
-    if (isRoute) {
-      const latency  = e.latency   || 0;
-      const cost     = e.cost      || 0;
-      const hopCount = e.hop_count || 0;
-      svgHTML += edgeLabelHTML(
-        fromPos, toPos, stroke,
-        `${latency > 0 ? latency.toFixed(1) + 'ms' : '—'} · ${hopCount}hop`,
-        `cost: ${cost > 0 ? cost.toFixed(4) : '—'}`
-      );
-    }
+    const dx = toPos.x-fromPos.x, dy = toPos.y-fromPos.y;
+    const len = Math.sqrt(dx*dx+dy*dy), ux = dx/len, uy = dy/len;
+    const fromR = e.from==='GATEWAY' ? 30 : 32, toR = e.to==='GATEWAY' ? 30 : 32;
+    svgHTML += `<line x1="${fromPos.x+ux*fromR}" y1="${fromPos.y+uy*fromR}" x2="${toPos.x-ux*toR}" y2="${toPos.y-uy*toR}" stroke="${stroke}" stroke-width="${width}" stroke-dasharray="${dash}" opacity="${opacity}" marker-end="${marker}"/>`;
+    if (isRoute) svgHTML += edgeLabelHTML(fromPos, toPos, stroke, `${e.latency > 0 ? e.latency.toFixed(1)+'ms' : '—'} · ${e.hop_count||0}hop`, `cost: ${e.cost > 0 ? e.cost.toFixed(4) : '—'}`);
   });
 
-  // ── Fallback: draw gateway→node lines for nodes not in edges ──
   ids.forEach(id => {
     const edgeKey = ['GATEWAY', id].sort().join('-');
     if (drawnEdges.has(edgeKey)) return;
     drawnEdges.add(edgeKey);
-
-    const p = positions[id];
-    const n = nodes[id];
-    const proto  = n.protocol || '';
+    const p = positions[id], n = nodes[id];
+    const proto = n.protocol || '';
     const stroke = proto.includes('BLE') ? '#a78bfa' : '#06b6d4';
     const arrowM = proto.includes('BLE') ? 'url(#arrow-purple)' : 'url(#arrow-cyan)';
-
-    const dx = p.x - gwX, dy = p.y - gwY;
-    const len = Math.sqrt(dx * dx + dy * dy);
-    const ux = dx / len, uy = dy / len;
-    const x1 = gwX + ux * 30,  y1 = gwY + uy * 30;
-    const x2 = p.x - ux * 32,  y2 = p.y - uy * 32;
-
-    svgHTML += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"
-      stroke="${stroke}" stroke-width="2" opacity="0.5" marker-end="${arrowM}"/>`;
-
-    const lat  = n.avg_latency_ms || 0;
-    const rssi = n.rssi || -99;
-    svgHTML += edgeLabelHTML(
-      { x: gwX, y: gwY }, p, stroke,
-      `${proto.includes('BLE') ? 'Bluetooth' : 'WiFi'} · ${rssi}dBm`,
-      `${lat > 0 ? lat.toFixed(1) + 'ms' : 'direct'}`
-    );
+    const dx = p.x-gwX, dy = p.y-gwY, len = Math.sqrt(dx*dx+dy*dy), ux = dx/len, uy = dy/len;
+    svgHTML += `<line x1="${gwX+ux*30}" y1="${gwY+uy*30}" x2="${p.x-ux*32}" y2="${p.y-uy*32}" stroke="${stroke}" stroke-width="2" opacity="0.5" marker-end="${arrowM}"/>`;
+    svgHTML += edgeLabelHTML({ x: gwX, y: gwY }, p, stroke, `${proto.includes('BLE') ? 'Bluetooth' : 'WiFi'} · ${n.rssi || -99}dBm`, `${(n.avg_latency_ms||0) > 0 ? (n.avg_latency_ms).toFixed(1)+'ms' : 'direct'}`);
   });
 
-  // ── Gateway node ──
-  svgHTML += `
-    <circle cx="${gwX}" cy="${gwY}" r="28" fill="#111827" stroke="#22c55e" stroke-width="2.5" filter="url(#glow)"/>
-    <text x="${gwX}" y="${gwY - 2}" text-anchor="middle" dominant-baseline="middle"
-      fill="#22c55e" font-family="JetBrains Mono" font-size="12" font-weight="700">GW</text>
-    <text x="${gwX}" y="${gwY + 12}" text-anchor="middle"
-      fill="rgba(34,197,94,0.6)" font-family="JetBrains Mono" font-size="8">GATEWAY</text>`;
+  svgHTML += `<circle cx="${gwX}" cy="${gwY}" r="28" fill="#111827" stroke="#22c55e" stroke-width="2.5" filter="url(#glow)"/>
+    <text x="${gwX}" y="${gwY-2}" text-anchor="middle" dominant-baseline="middle" fill="#22c55e" font-family="JetBrains Mono" font-size="12" font-weight="700">GW</text>
+    <text x="${gwX}" y="${gwY+12}" text-anchor="middle" fill="rgba(34,197,94,0.6)" font-family="JetBrains Mono" font-size="8">GATEWAY</text>`;
 
-  // ── Mesh nodes ──
   ids.forEach(id => {
-    const p    = positions[id];
-    const n    = nodes[id];
+    const p = positions[id], n = nodes[id];
     const status = n.status || 'OFFLINE';
-    const col  = status === 'ONLINE' ? '#06b6d4' : status === 'DEGRADED' ? '#f59e0b' : '#ef4444';
-    const proto = n.protocol || '?';
+    const col = status === 'ONLINE' ? '#06b6d4' : status === 'DEGRADED' ? '#f59e0b' : '#ef4444';
     const score = n.health_score ?? 0;
-    const lat   = n.avg_latency_ms || 0;
-    const rssi  = n.rssi || -99;
-    const mode  = n.route_mode || 'balanced';
-    const scoreColor = score >= 70 ? '#22c55e' : score >= 40 ? '#f59e0b' : '#ef4444';
-
-    svgHTML += `
-      <circle cx="${p.x}" cy="${p.y}" r="30" fill="#111827" stroke="${col}" stroke-width="2" filter="url(#glow)"/>
-      <text x="${p.x}" y="${p.y - 4}" text-anchor="middle"
-        fill="${col}" font-family="JetBrains Mono" font-size="10" font-weight="700">${id}</text>
-      <text x="${p.x}" y="${p.y + 9}" text-anchor="middle"
-        fill="rgba(255,255,255,0.35)" font-family="JetBrains Mono" font-size="7">${proto}</text>
-      <text x="${p.x}" y="${p.y + 48}" text-anchor="middle"
-        fill="#8892a4" font-family="JetBrains Mono" font-size="10">
-        ${lat > 0 ? lat.toFixed(1) + 'ms' : '—'} · ${rssi}dBm</text>
-      <text x="${p.x}" y="${p.y + 62}" text-anchor="middle"
-        fill="#5a6577" font-family="JetBrains Mono" font-size="9">
-        Score: ${score} · ${mode}</text>`;
+    const lat = n.avg_latency_ms || 0;
+    const mode = n.route_mode || 'balanced';
+    svgHTML += `<circle cx="${p.x}" cy="${p.y}" r="30" fill="#111827" stroke="${col}" stroke-width="2" filter="url(#glow)"/>
+      <text x="${p.x}" y="${p.y-4}" text-anchor="middle" fill="${col}" font-family="JetBrains Mono" font-size="10" font-weight="700">${id}</text>
+      <text x="${p.x}" y="${p.y+9}" text-anchor="middle" fill="rgba(255,255,255,0.35)" font-family="JetBrains Mono" font-size="7">${n.protocol || '?'}</text>
+      <text x="${p.x}" y="${p.y+48}" text-anchor="middle" fill="#8892a4" font-family="JetBrains Mono" font-size="10">${lat > 0 ? lat.toFixed(1)+'ms' : '—'} · ${n.rssi || -99}dBm</text>
+      <text x="${p.x}" y="${p.y+62}" text-anchor="middle" fill="#5a6577" font-family="JetBrains Mono" font-size="9">Score: ${score} · ${mode}</text>`;
   });
-
   svg.innerHTML = svgHTML;
 }
 
@@ -1114,18 +1696,20 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
     tab.classList.add('active');
-    document.getElementById(`panel-${tab.dataset.tab}`).classList.add('active');
-
-    // Resize charts when switching to chart tabs
-    if (tab.dataset.tab === 'charts' || tab.dataset.tab === 'compare') {
-      Object.values(charts).forEach(c => c.resize());
-    }
+    const panel = document.getElementById(`panel-${tab.dataset.tab}`);
+    if (panel) panel.classList.add('active');
+    if (tab.dataset.tab === 'charts' || tab.dataset.tab === 'compare') Object.values(charts).forEach(c => c.resize());
   });
 });
 
 // ══════════════════════════════════════════════
-//  INIT
+//  INIT — apply default sort header highlight
 // ══════════════════════════════════════════════
+(function initRtSort() {
+  const th = document.getElementById('th-cost');
+  if (th) { th.classList.add('sort-active', 'sort-asc'); }
+})();
+
 connectWS();
 </script>
 </body>

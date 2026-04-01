@@ -38,7 +38,7 @@ WIFI_SSID      = "OnePlus13Equals14"       # Shared WiFi network name
 WIFI_PASSWORD  = "gkpm5847"   # Shared WiFi password
 
 ENABLE_WIFI = True
-ENABLE_BLE = True
+ENABLE_BLE = False
 
 # Cost function weights  (must sum to 1.0)
 # These can be updated at runtime via ROUTE_PREF packets from the dashboard
@@ -275,9 +275,9 @@ def udp_broadcast(port, obj):
 #   [18]   packet loss * 255 (uint8)
 # ══════════════════════════════════════════════
 
-def encode_ble(pkt_type, seq_hop, ts, rssi, lat_ms, loss_pct):
+def encode_ble(pkt_type, seq_hop, ts, rssi, lat_ms, loss_pct, node_id_override=None):
     # MicroPython: bytes has no .ljust() — pad manually
-    raw_b   = NODE_ID.encode()[:7]
+    raw_b   = (node_id_override or NODE_ID).encode()[:7]
     node_b  = raw_b + b'\x00' * (7 - len(raw_b))
     ts_int  = int(ts) & 0xFFFFFFFF
     rssi_b  = (rssi + 128) & 0xFF
@@ -433,7 +433,28 @@ def ble_advertise(pkt_type, seq_hop, ts, rssi, lat_ms, loss_pct):
     except Exception as e:
         print(f"[BLE]  Advertise error: {e}")
 
-
+def ble_advertise_proxy(target_node_id, pkt_type, seq_hop, ts, rssi, lat_ms, loss_pct):
+    """
+    Advertise metrics on behalf of a WiFi-only neighbour so that
+    BLE-only nodes (e.g. NODE_Ad) can discover WiFi-only nodes
+    (e.g. NODE_lx) via this dual-protocol relay node.
+    The advertisement looks exactly like a normal BLE beacon except
+    the embedded node_id is the target, not ours.
+    """
+    if not ble_active or ble_obj is None:
+        return
+    try:
+        payload = encode_ble(pkt_type, seq_hop, ts, rssi, lat_ms, loss_pct,
+                             node_id_override=target_node_id)
+        ad = bytes([len(payload) + 1, 0xFF]) + payload
+        ble_obj.gap_advertise(100_000, adv_data=ad)
+        time.sleep(0.15)          # hold long enough for a nearby scanner to catch it
+        # Restore our own advertisement so we don't disappear from neighbours
+        own_payload = encode_ble(BLE_PKT_TYPE_HELLO, 0, ts, rssi, lat_ms, loss_pct)
+        own_ad = bytes([len(own_payload) + 1, 0xFF]) + own_payload
+        ble_obj.gap_advertise(100_000, adv_data=own_ad)
+    except Exception as e:
+        print(f"[BLE]  Proxy advertise error for {target_node_id}: {e}")
 # ══════════════════════════════════════════════
 #  LINK STATS HELPERS
 # ══════════════════════════════════════════════
@@ -578,22 +599,69 @@ def learn_indirect_routes(sender_id, sender_routing, my_cost_to_sender):
         new_cost    = compute_cost(new_lat, new_loss, 0.5)
 
         existing = routing_table.get(dest)
+        existing = routing_table.get(dest)
         if existing is None or new_cost < existing.get("cost", 9999):
+            # Determine which protocol THIS node uses to reach sender_id (the next hop).
+            # An indirect route's best_protocol must reflect the FIRST HOP from this node,
+            # not the downstream protocol the sender uses to reach the destination.
+            # e.g. NODE_lx --(WiFi)--> NODE_gw --(BLE)--> NODE_Ad
+            #      NODE_lx should record best_protocol=WiFi, not BLE.
+            my_route_to_sender = routing_table.get(sender_id, {})
+            my_proto_to_sender = my_route_to_sender.get("best_protocol", "WiFi")
+
+            # Compute per-protocol costs for the first hop only
+            # (what this node can actually do to reach sender_id)
+            sender_wifi_lnk = link_stats.get((sender_id, "WiFi"))
+            sender_ble_lnk  = link_stats.get((sender_id, "BLE"))
+            now_t = time.time()
+
+            wifi_first_cost = None
+            ble_first_cost  = None
+            wifi_first_lat  = None
+            ble_first_lat   = None
+
+            if sender_wifi_lnk and (now_t - sender_wifi_lnk["last_seen"] < ROUTE_TIMEOUT):
+                w_lat = avg_latency(sender_id, "WiFi") + info.get("avg_latency_ms", 9999)
+                wifi_first_cost = compute_cost(w_lat, sender_wifi_lnk["packet_loss"],
+                                               sender_wifi_lnk["power_cost"])
+                wifi_first_lat = w_lat
+
+            if sender_ble_lnk and (now_t - sender_ble_lnk["last_seen"] < ROUTE_TIMEOUT):
+                b_lat = avg_latency(sender_id, "BLE") + info.get("avg_latency_ms", 9999)
+                ble_first_cost = compute_cost(b_lat, sender_ble_lnk["packet_loss"],
+                                              sender_ble_lnk["power_cost"])
+                ble_first_lat = b_lat
+
+            # Elect best protocol based on what THIS node can reach sender_id with
+            if wifi_first_cost is not None and (ble_first_cost is None or wifi_first_cost <= ble_first_cost):
+                my_proto_to_sender = "WiFi"
+                best_indirect_cost = wifi_first_cost
+                best_indirect_lat  = wifi_first_lat
+            elif ble_first_cost is not None:
+                my_proto_to_sender = "BLE"
+                best_indirect_cost = ble_first_cost
+                best_indirect_lat  = ble_first_lat
+            else:
+                # Fallback: no fresh direct link stats yet, use computed new_cost
+                best_indirect_cost = new_cost
+                best_indirect_lat  = new_lat
+
             routing_table[dest] = {
-                "next_hop"      : sender_id,         # go via this neighbour
-                "best_protocol" : info.get("best_protocol", "WiFi"),
+                "next_hop"      : sender_id,
+                "best_protocol" : my_proto_to_sender,   # ← FIRST HOP protocol, not sender's downstream protocol
                 "hop_count"     : new_hops,
-                "avg_latency_ms": round(new_lat, 2),
+                "avg_latency_ms": round(best_indirect_lat, 2),
                 "packet_loss"   : round(new_loss, 4),
                 "power_cost"    : 0.5,
-                "cost"          : round(new_cost, 6),
-                "wifi_cost"     : round(new_cost, 6),
-                "ble_cost"      : round(new_cost + 0.2, 6),
-                "wifi_lat"      : round(new_lat, 2),
-                "ble_lat"       : round(new_lat + 20, 2),
+                "cost"          : round(best_indirect_cost, 6),
+                "wifi_cost"     : round(wifi_first_cost, 6) if wifi_first_cost is not None else None,
+                "ble_cost"      : round(ble_first_cost,  6) if ble_first_cost  is not None else None,
+                "wifi_lat"      : round(wifi_first_lat,  2) if wifi_first_lat  is not None else None,
+                "ble_lat"       : round(ble_first_lat,   2) if ble_first_lat   is not None else None,
                 "last_seen"     : time.time()
             }
-            print(f"[Route] Indirect route: {dest} via {sender_id}  hops={new_hops}  cost={new_cost:.4f}")
+            print(f"[Route] Indirect route: {dest} via {sender_id}  "
+                  f"proto={my_proto_to_sender}  hops={new_hops}  cost={best_indirect_cost:.4f}")
 
 
 def prune_stale_routes():
@@ -688,9 +756,35 @@ def broadcast_hello():
                    for s in lnk["latency_samples"] if p == "BLE"]
     avg_ble_lat = sum(ble_samples) / len(ble_samples) if ble_samples else 0.0
     ble_advertise(BLE_PKT_TYPE_HELLO, 0, ts, rssi, avg_ble_lat, 0.0)
-
     neighbours = list(set(n for (n, _) in link_stats.keys()))
     print(f"[Hello] WiFi+BLE broadcast  |  known neighbours: {neighbours}")
+
+    # ── Proxy-advertise WiFi-only neighbours via BLE ─────────────
+    # Only dual-protocol nodes do this (need both wifi_active + ble_active).
+    # For each WiFi neighbour that has no BLE link seen, emit a short BLE
+    # beacon carrying their node_id so BLE-only nodes can add them to
+    # their routing table via learn_indirect_routes / rebuild_routing_table.
+    if wifi_active and ble_active:
+        now_proxy = time.time()
+        proxied = []
+        for (node_id, proto), lnk in list(link_stats.items()):
+            if proto != "WiFi":
+                continue
+            if now_proxy - lnk["last_seen"] > ROUTE_TIMEOUT:
+                continue
+            # Only proxy nodes that have no direct BLE link (truly WiFi-only)
+            ble_lnk = link_stats.get((node_id, "BLE"))
+            has_ble = ble_lnk and (now_proxy - ble_lnk["last_seen"] < ROUTE_TIMEOUT)
+            if has_ble:
+                continue
+            lat  = avg_latency(node_id, "WiFi")
+            loss = lnk["packet_loss"]
+            rssi_proxy = lnk["rssi"]
+            ble_advertise_proxy(node_id, BLE_PKT_TYPE_HELLO, 0, now_proxy,
+                                rssi_proxy, lat, loss)
+            proxied.append(node_id)
+        if proxied:
+            print(f"[Hello] BLE-proxied WiFi-only nodes: {proxied}")
 
 
 # ══════════════════════════════════════════════
