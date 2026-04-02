@@ -32,13 +32,13 @@ from micropython import const
 # ══════════════════════════════════════════════
 #  ① NODE CONFIGURATION  ← edit per device
 # ══════════════════════════════════════════════
-NODE_ID        = "NODE_lx"       # Change to NODE_02, NODE_03 … for each Pico W
+NODE_ID        = "NODE_X"       # Change to NODE_02, NODE_03 … for each Pico W
 GATEWAY_IP     = "10.202.64.43"   # Raspberry Pi IP
 WIFI_SSID      = "OnePlus13Equals14"       # Shared WiFi network name
 WIFI_PASSWORD  = "gkpm5847"   # Shared WiFi password
 
 ENABLE_WIFI = True
-ENABLE_BLE = False
+ENABLE_BLE = True
 
 # Cost function weights  (must sum to 1.0)
 # These can be updated at runtime via ROUTE_PREF packets from the dashboard
