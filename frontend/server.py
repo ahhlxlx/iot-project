@@ -437,37 +437,6 @@ def get_node_ip(node_data: dict) -> str:
             return ip
     return ""
 
-def send_route_pref_udp(node_id, mode, weights, node_ip):
-    """
-    Send a signed ROUTE_PREF UDP packet directly to a node.
-    Returns (ok: bool, message: str)
-    """
-    cmd = {
-        "type":           "ROUTE_PREF",
-        "node_id":        "NODE_SV",
-        "target":         node_id,
-        "mode":           mode,
-        "w_latency":      weights["w_latency"],
-        "w_packet_loss":  weights["w_packet_loss"],
-        "w_power":        weights["w_power"],
-        # "timestamp":      time.time(),
-        "timestamp":     int(time.time()), 
-    }
-    sign_packet(cmd)   # ← HMAC sign before sending
-
-    s = None
-    try:
-        s = raw_socket.socket(raw_socket.AF_INET, raw_socket.SOCK_DGRAM)
-        s.settimeout(2.0)
-        s.sendto(json.dumps(cmd).encode(), (node_ip, UDP_MESH_PORT))
-        log.info(f"[RoutePref] Sent {mode} weights to {node_id} @ {node_ip}")
-        return True, f"Sent to {node_id} @ {node_ip}"
-    except Exception as e:
-        log.error(f"[RoutePref] Failed to send to {node_id} @ {node_ip}: {e}")
-        return False, str(e)
-    finally:
-        if s:
-            s.close()
 
 
 # ─────────────────────────────────────────────
@@ -501,6 +470,21 @@ async def api_path_analyze(request: Request):
         "total_cost": round(total_cost, 6),
     }
 
+# ─────────────────────────────────────────────
+#  HELPER: Send route pref via gateway (not direct UDP)
+# ─────────────────────────────────────────────
+async def send_route_pref_via_gateway(node_id: str, mode: str, weights: dict):
+    """Forward route preference to node via gateway instead of direct UDP."""
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        try:
+            resp = await client.post(
+                f"{GATEWAY_URL}/route_pref",
+                json={"node_id": node_id, "mode": mode, "weights": weights}
+            )
+            data = resp.json()
+            return data.get("ok", False), data.get("message", "") or data.get("error", "")
+        except Exception as e:
+            return False, str(e)
 
 # ─────────────────────────────────────────────
 #  API: PATH APPLY (calculate + send to nodes)
@@ -508,8 +492,8 @@ async def api_path_analyze(request: Request):
 @app.post("/api/path_apply")
 async def api_path_apply(request: Request):
     body = await request.json()
-    src = body.get("src", "")
-    dst = body.get("dst", "")
+    src  = body.get("src", "")
+    dst  = body.get("dst", "")
     mode = body.get("mode", "balanced")
 
     if not src or not dst:
@@ -517,10 +501,14 @@ async def api_path_apply(request: Request):
     if mode not in WEIGHT_PROFILES:
         return {"error": f"Invalid mode. Use: {list(WEIGHT_PROFILES.keys())}"}
 
-    nodes = cached_data.get("health_matrix", {}).get("nodes", {})
-    weights = WEIGHT_PROFILES[mode]
-    hops = trace_path(src, dst, nodes, weights)
+    if not cached_data["gateway_online"]:
+        return {"error": "Gateway is offline — cannot apply route preferences"}
 
+    nodes   = cached_data.get("health_matrix", {}).get("nodes", {})
+    weights = WEIGHT_PROFILES[mode]
+    hops    = trace_path(src, dst, nodes, weights)
+
+    # Collect unique node IDs in path (exclude GATEWAY)
     node_ids = set()
     for h in hops:
         if h["from"] != "GATEWAY":
@@ -538,28 +526,31 @@ async def api_path_apply(request: Request):
             results[nid] = {"ok": False, "message": "Node not in health matrix"}
             continue
 
-        sender_ip = get_node_ip(node_data)
-        if not sender_ip:
+        # Check upfront if node is BLE-only before calling gateway
+        sender_ip = node_data.get("sender_ip", "")
+        if not sender_ip or sender_ip in ("BLE-direct", "BLE-only", ""):
             results[nid] = {
                 "ok": False,
-                "message": "BLE-only node — no WiFi IP to send UDP"
+                "message": "BLE-only node — no WiFi IP, cannot deliver via gateway"
             }
             continue
 
-        ok, msg = send_route_pref_udp(nid, mode, weights, sender_ip)
+        ok, msg = await send_route_pref_via_gateway(nid, mode, weights)
         results[nid] = {"ok": ok, "message": msg}
 
     success_count = sum(1 for r in results.values() if r["ok"])
-    fail_count = len(results) - success_count
+    fail_count    = len(results) - success_count
 
     return {
-        "src": src, "dst": dst, "mode": mode,
-        "weights": weights,
-        "hops": hops,
-        "node_results": results,
+        "src":           src,
+        "dst":           dst,
+        "mode":          mode,
+        "weights":       weights,
+        "hops":          hops,
+        "node_results":  results,
         "success_count": success_count,
-        "fail_count": fail_count,
-        "total_nodes": len(node_ids),
+        "fail_count":    fail_count,
+        "total_nodes":   len(node_ids),
     }
 
 

@@ -601,6 +601,46 @@ def api_node(node_id):
         return jsonify(node_copy)
     return jsonify({"error": "Node not found"}), 404
 
+@flask_app.route("/route_pref", methods=["POST"])
+def api_route_pref():
+    """Receive weight update from server.py and forward to node via UDP."""
+    data = request.get_json()
+    node_id  = data.get("node_id")
+    mode     = data.get("mode", "balanced")
+    weights  = data.get("weights", {})
+
+    with matrix_lock:
+        node = health_matrix.get(node_id)
+    if not node:
+        return jsonify({"ok": False, "error": f"{node_id} not in health matrix"}), 404
+
+    sender_ip = node.get("sender_ip", "")
+    if not sender_ip or sender_ip in ("BLE-direct", "BLE-only", ""):
+        return jsonify({"ok": False, "error": "BLE-only node — no WiFi IP"}), 400
+
+    cmd = {
+        "type":          "ROUTE_PREF",
+        "node_id":       "GATEWAY",
+        "target":        node_id,
+        "mode":          mode,
+        "w_latency":     weights.get("w_latency", 0.5),
+        "w_packet_loss": weights.get("w_packet_loss", 0.3),
+        "w_power":       weights.get("w_power", 0.2),
+        "timestamp":     int(time.time()),
+    }
+    sign_packet(cmd)
+
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(2.0)
+        s.sendto(json.dumps(cmd).encode(), (sender_ip, 5005))
+        s.close()
+        log.info(f"[RoutePref] Forwarded {mode} to {node_id} @ {sender_ip}")
+        return jsonify({"ok": True, "message": f"Sent to {node_id} @ {sender_ip}"})
+    except Exception as e:
+        log.error(f"[RoutePref] Failed: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 
 @flask_app.route("/summary", methods=["GET"])
 def api_summary():
