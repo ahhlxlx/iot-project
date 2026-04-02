@@ -30,6 +30,8 @@ import time
 import json
 import hashlib
 import machine
+import sys
+sys.path.append('/Project')
 
 import ble_code
 import wifi_code
@@ -45,12 +47,12 @@ from ble_code import (
 # ══════════════════════════════════════════════
 
 NODE_ID       = "NODE_lx"             # Change to NODE_02, NODE_03 … for each Pico W
-GATEWAY_IP    = "10.202.64.43"        # Raspberry Pi IP
+GATEWAY_IP    = "10.202.64.140"        # Raspberry Pi IP
 WIFI_SSID     = "OnePlus13Equals14"   # Shared WiFi network name
 WIFI_PASSWORD = "gkpm5847"            # Shared WiFi password
 
-ENABLE_WIFI = True
-ENABLE_BLE  = False
+ENABLE_WIFI = False
+ENABLE_BLE  = True
 
 # Cost-function weights  (must sum to 1.0)
 # Updated at runtime via ROUTE_PREF packets from the dashboard
