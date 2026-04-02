@@ -620,6 +620,13 @@ def send_metrics():
 
     avg_w_lat   = sum(w_lats)   / len(w_lats)   if w_lats   else 0.0
     avg_b_lat   = sum(b_lats)   / len(b_lats)   if b_lats   else 0.0
+    if avg_b_lat == 0.0:
+        rssi_val = wifi_code.wifi_rssi()
+        if rssi_val <= -99:  # truly BLE-only, use BLE RSSI
+            ble_rssis = [lnk["rssi"] for (_, p), lnk in link_stats.items() if p == "BLE" and lnk["rssi"] > -99]
+            if ble_rssis:
+                avg_ble_rssi = sum(ble_rssis) / len(ble_rssis)
+                avg_b_lat = max(20.0, min(120.0, (avg_ble_rssi + 40) * -1.375 + 25))
     avg_w_loss  = sum(w_losses) / len(w_losses) if w_losses else 0.0
     avg_b_loss  = sum(b_losses) / len(b_losses) if b_losses else 0.0
     avg_b_rssi  = sum(b_rssies) / len(b_rssies) if b_rssies else -99

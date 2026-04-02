@@ -718,7 +718,11 @@ def ble_advertisement_callback(device, advertisement_data):
                 decoded = decode_ble_payload(bytes(payload))
             if decoded is None:
                 continue
-
+            
+            lat_ms = decoded["lat_ms"]
+            if lat_ms == 0.0 and adv_rssi > -99:
+                lat_ms = rssi_to_ble_latency(adv_rssi)
+            
             node_id  = decoded["node_id"]
             pkt_type = decoded["pkt_type"]
             adv_rssi = advertisement_data.rssi or -99
@@ -749,7 +753,7 @@ def ble_advertisement_callback(device, advertisement_data):
                         "routing_table": {},
                         "metrics": {
                             "wifi_avg_latency_ms": 0,
-                            "ble_avg_latency_ms" : decoded["lat_ms"],
+                            "ble_avg_latency_ms" : lat_ms,
                             "wifi_packet_loss"   : 1.0,
                             "ble_packet_loss"    : decoded["loss"],
                             "wifi_rssi"          : -99,
@@ -798,6 +802,13 @@ def ble_gateway_scanner():
         loop.run_until_complete(ble_scan_async())
     except Exception as e:
         log.error(f"[BLE-GW] Fatal: {e}")
+
+def rssi_to_ble_latency(rssi):
+    """Estimate BLE latency from RSSI when no samples available."""
+    if rssi <= -99:
+        return 0.0
+    # -40 dBm (strong) → ~25ms, -80 dBm (weak) → ~80ms
+    return max(20.0, min(120.0, (rssi + 40) * -1.375 + 25))
 
 
 # ─────────────────────────────────────────────

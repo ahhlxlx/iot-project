@@ -612,6 +612,10 @@ function analyzeHop(fromId, toId, fromNode, routeEntry, weights) {
   if (metrics.ble_rssi != null)       bRssi = metrics.ble_rssi;
   else if (isBleNode)                 bRssi = fromNode.rssi || -99;
   else                                bRssi = -99;
+  
+  if (bLat === 0 && bRssi > -99) {
+    bLat = Math.max(20.0, Math.min(120.0, (bRssi + 40) * -1.375 + 25));
+  }
   const bPower = metrics.ble_power_cost || rssiToPowerCost(bRssi);
 
   const wAvail = wRssi > -99 || wLat > 0;
