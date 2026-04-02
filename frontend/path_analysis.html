@@ -143,7 +143,17 @@
   }
   .apply-node-tag.sent { background: var(--accent-green-dim); color: var(--accent-green); }
   .apply-node-tag.failed { background: var(--accent-red-dim); color: var(--accent-red); }
-  .apply-node-tag.ble-only { background: var(--accent-purple-dim); color: var(--accent-purple); cursor: help; }
+  .node-route-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .route-mode-badge {
+    font-size: 9px; font-family: 'JetBrains Mono', monospace; font-weight: 700;
+    padding: 2px 6px; border-radius: 4px; text-transform: uppercase;
+    background: var(--bg-card-inner); border: 1px solid var(--border); color: var(--text-muted);
+  }
+  .route-mode-badge.speed     { border-color: var(--accent-cyan);   color: var(--accent-cyan);   }
+  .route-mode-badge.reliability { border-color: var(--accent-orange); color: var(--accent-orange); }
+  .route-mode-badge.power     { border-color: var(--accent-green);  color: var(--accent-green);  }
+  .route-mode-badge.balanced  { border-color: var(--accent-blue);   color: var(--accent-blue);   }
+  .route-ack-time { font-size: 9px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; }
 
   .toast-container {
     position: fixed; bottom: 24px; right: 24px; z-index: 1000;
@@ -381,7 +391,7 @@ async function applyToNodes() {
       btn.className = 'apply-btn error';
       btn.textContent = '✕ Failed';
       showToast('Error: ' + data.error, 'error', 5000);
-      setTimeout(function(){ btn.className = 'apply-btn'; btn.textContent = '⚡ Apply ' + profile.label + ' to Nodes'; }, 4000);
+      setTimeout(function(){ btn.className = 'apply-btn'; btn.textContent = '⚡ Apply ' + profile.label + ' to Nodes'; btn.disabled = false; }, 4000);
       return;
     }
 
@@ -644,7 +654,6 @@ function updateApplyPanel() {
   const panel = document.getElementById('applyPanel');
   if (!lastComputedHops.length) { panel.style.display = 'none'; return; }
 
-  // Collect unique node IDs (exclude GATEWAY)
   const nodeIds = new Set();
   lastComputedHops.forEach(function(h) {
     if (h.from !== 'GATEWAY') nodeIds.add(h.from);
@@ -657,38 +666,57 @@ function updateApplyPanel() {
   const profile = WEIGHT_PROFILES[currentMode];
   document.getElementById('applyModeName').textContent = profile.label;
 
-  // Show node tags — mark BLE-only nodes with a warning
+  // Show node tags with current route mode and last ACK time
   const nodes = latestData?.health_matrix?.nodes || {};
   const tagContainer = document.getElementById('applyNodesList');
   tagContainer.innerHTML = '';
   let bleOnlyCount = 0;
+
+  const GATEWAY_TO_LABEL = { latency: 'speed', cost: 'reliability', power: 'power', balanced: 'balanced' };
+
   for (const nodeId of nodeIds) {
-    const tag = document.createElement('span');
     const nd = nodes[nodeId];
     const ip = nd?.sender_ip || nd?.wifi_sender_ip || '';
     const isBleOnly = !ip || ip === 'BLE-direct' || ip === 'BLE-only';
-    if (isBleOnly) {
-      bleOnlyCount++;
-      tag.className = 'apply-node-tag ble-only';
-      tag.textContent = nodeId + ' (BLE-only)';
-      tag.title = 'No WiFi IP — ROUTE_PREF cannot be delivered via UDP';
-    } else {
-      tag.className = 'apply-node-tag';
-      tag.textContent = nodeId;
+    if (isBleOnly) bleOnlyCount++;
+
+    const row = document.createElement('div');
+    row.className = 'node-route-row';
+
+    // Node tag
+    const tag = document.createElement('span');
+    tag.className = 'apply-node-tag' + (isBleOnly ? ' ble-only' : '');
+    tag.textContent = nodeId + (isBleOnly ? ' (BLE-only)' : '');
+    if (isBleOnly) tag.title = 'No WiFi IP — ROUTE_PREF cannot be delivered via UDP';
+    row.appendChild(tag);
+
+    // Current confirmed route mode badge
+    if (nd?.route_mode) {
+      const modeKey = GATEWAY_TO_LABEL[nd.route_mode] || nd.route_mode;
+      const badge = document.createElement('span');
+      badge.className = 'route-mode-badge ' + modeKey;
+      badge.textContent = 'now: ' + nd.route_mode;
+      row.appendChild(badge);
     }
-    tagContainer.appendChild(tag);
+
+    // Last ACK time
+    if (nd?.route_ack_time) {
+      const secs = Math.round(Date.now() / 1000 - nd.route_ack_time);
+      const ackEl = document.createElement('span');
+      ackEl.className = 'route-ack-time';
+      ackEl.textContent = '✓ confirmed ' + (secs < 60 ? secs + 's ago' : Math.round(secs / 60) + 'm ago');
+      row.appendChild(ackEl);
+    }
+
+    tagContainer.appendChild(row);
   }
 
-  // Reset button; warn if all nodes are unreachable
+  // Button state
   const btn = document.getElementById('applyBtn');
   if (bleOnlyCount === nodeIds.size) {
-    btn.className = 'apply-btn error';
-    btn.textContent = '✕ All nodes are BLE-only';
-    btn.disabled = true;
+    btn.className = 'apply-btn error'; btn.textContent = '✕ All nodes are BLE-only'; btn.disabled = true;
   } else {
-    btn.className = 'apply-btn';
-    btn.textContent = '⚡ Apply ' + profile.label + ' to Nodes';
-    btn.disabled = false;
+    btn.className = 'apply-btn'; btn.textContent = '⚡ Apply ' + profile.label + ' to Nodes'; btn.disabled = false;
   }
 }
 
