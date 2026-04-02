@@ -143,6 +143,7 @@
   }
   .apply-node-tag.sent { background: var(--accent-green-dim); color: var(--accent-green); }
   .apply-node-tag.failed { background: var(--accent-red-dim); color: var(--accent-red); }
+  .apply-node-tag.ble-only { background: var(--accent-purple-dim); color: var(--accent-purple); cursor: help; }
 
   .toast-container {
     position: fixed; bottom: 24px; right: 24px; z-index: 1000;
@@ -424,7 +425,7 @@ async function applyToNodes() {
     showToast('Could not reach server: ' + e.message, 'error', 5000);
   }
 
-  setTimeout(function(){ btn.className = 'apply-btn'; btn.textContent = '⚡ Apply ' + profile.label + ' to Nodes'; }, 4000);
+  setTimeout(function(){ btn.className = 'apply-btn'; btn.textContent = '⚡ Apply ' + profile.label + ' to Nodes'; btn.disabled = false; }, 4000);
 }
 
 function setMode(mode) {
@@ -656,20 +657,39 @@ function updateApplyPanel() {
   const profile = WEIGHT_PROFILES[currentMode];
   document.getElementById('applyModeName').textContent = profile.label;
 
-  // Show node tags
+  // Show node tags — mark BLE-only nodes with a warning
+  const nodes = latestData?.health_matrix?.nodes || {};
   const tagContainer = document.getElementById('applyNodesList');
   tagContainer.innerHTML = '';
+  let bleOnlyCount = 0;
   for (const nodeId of nodeIds) {
     const tag = document.createElement('span');
-    tag.className = 'apply-node-tag';
-    tag.textContent = nodeId;
+    const nd = nodes[nodeId];
+    const ip = nd?.sender_ip || nd?.wifi_sender_ip || '';
+    const isBleOnly = !ip || ip === 'BLE-direct' || ip === 'BLE-only';
+    if (isBleOnly) {
+      bleOnlyCount++;
+      tag.className = 'apply-node-tag ble-only';
+      tag.textContent = nodeId + ' (BLE-only)';
+      tag.title = 'No WiFi IP — ROUTE_PREF cannot be delivered via UDP';
+    } else {
+      tag.className = 'apply-node-tag';
+      tag.textContent = nodeId;
+    }
     tagContainer.appendChild(tag);
   }
 
-  // Reset button
+  // Reset button; warn if all nodes are unreachable
   const btn = document.getElementById('applyBtn');
-  btn.className = 'apply-btn';
-  btn.textContent = '⚡ Apply ' + profile.label + ' to Nodes';
+  if (bleOnlyCount === nodeIds.size) {
+    btn.className = 'apply-btn error';
+    btn.textContent = '✕ All nodes are BLE-only';
+    btn.disabled = true;
+  } else {
+    btn.className = 'apply-btn';
+    btn.textContent = '⚡ Apply ' + profile.label + ' to Nodes';
+    btn.disabled = false;
+  }
 }
 
 function renderResultBanner(hops) {

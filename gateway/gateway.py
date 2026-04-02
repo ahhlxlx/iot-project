@@ -163,8 +163,10 @@ def find_manuf_data_gw(adv_data_bytes):
 seq_tracker = {}   # { node_id: { last_seq, expected_seq } }
 
 def sign_packet(pkt_dict):
-    """Add HMAC-SHA256 signature to outgoing packet."""
-    payload = json.dumps(pkt_dict).encode()
+    """Add HMAC-SHA256 signature to outgoing packet.
+    Uses sort_keys=True to match server.py and node_main.py's _sorted_json()."""
+    pkt_dict.pop("sig", None)
+    payload = json.dumps(pkt_dict, sort_keys=True, separators=(',', ':')).encode()
     sig = hmac.new(SHARED_KEY, payload, hashlib.sha256).hexdigest()
     pkt_dict["sig"] = sig
     return pkt_dict
@@ -286,11 +288,26 @@ def process_metric_packet(pkt, sender_ip):
         if len(lat_hist)  > 20: lat_hist.pop(0)
         if len(rssi_hist) > 20: rssi_hist.pop(0)
 
+        # ── Preserve WiFi sender_ip — never overwrite a real IP with a BLE placeholder ──
+        # NODE_gw (dual-protocol) sends WiFi metrics AND BLE beacons.
+        # The BLE scanner fires ~every 10 s with sender_ip="BLE-direct", which would
+        # constantly clobber the valid WiFi IP.  Rule: a real IP always wins.
+        BLE_PLACEHOLDERS = ("BLE-direct", "BLE-only", "")
+        existing_ip = existing.get("sender_ip", "")
+        existing_wifi_ip = existing.get("wifi_sender_ip", "")
+        if existing_ip not in BLE_PLACEHOLDERS and sender_ip in BLE_PLACEHOLDERS:
+            sender_ip = existing_ip          # keep the real IP
+        # Also carry forward wifi_sender_ip if we have one and new packet is BLE
+        wifi_sender_ip = existing_wifi_ip
+        if sender_ip not in BLE_PLACEHOLDERS:
+            wifi_sender_ip = sender_ip       # update to latest real IP
+
         # ── Build updated node entry ────────────────────────────────
         node_data = {
             "node_id"         : node_id,
             "protocol"        : protocol,
             "sender_ip"       : sender_ip,
+            "wifi_sender_ip"  : wifi_sender_ip,   # always a real IP if ever seen over WiFi
             "last_seen"       : now,
             "last_seen_str"   : now_str,
             "rssi"            : rssi,
@@ -364,7 +381,14 @@ def process_hello_packet(pkt, sender_ip):
             health_matrix[node_id]["routing_table"] = rt
             # Keep protocol and sender_ip current in case node switched WiFi↔BLE
             health_matrix[node_id]["protocol"]      = pkt.get("protocol", health_matrix[node_id].get("protocol", "WiFi"))
-            health_matrix[node_id]["sender_ip"]     = sender_ip
+            # Preserve WiFi IP — only update sender_ip if the new value is a real IP
+            # or we don't have a real IP yet
+            BLE_PLACEHOLDERS = ("BLE-direct", "BLE-only", "")
+            existing_ip = health_matrix[node_id].get("sender_ip", "")
+            if existing_ip in BLE_PLACEHOLDERS or sender_ip not in BLE_PLACEHOLDERS:
+                health_matrix[node_id]["sender_ip"] = sender_ip
+            if sender_ip not in BLE_PLACEHOLDERS:
+                health_matrix[node_id]["wifi_sender_ip"] = sender_ip
 
 
 # ─────────────────────────────────────────────

@@ -1,609 +1,781 @@
 """
-═══════════════════════════════════════════════════════════════
-  IoT Mesh Network Dashboard Server
-  Connects to gateway.py (Flask on port 8080) and serves a
-  real-time web dashboard with WebSocket live updates.
-
-  Run:  python server.py
-  Open: http://localhost:9000
-═══════════════════════════════════════════════════════════════
-  Requirements:
-    pip install fastapi uvicorn httpx websockets
-═══════════════════════════════════════════════════════════════
+===================================================
+IoT Mesh Network Gateway - Raspberry Pi 4
+===================================================
+Responsibilities:
+  - Host a WiFi Access Point (hostapd) OR connect
+    to a shared router that all Pico W nodes join
+  - Listen on UDP port 5006 for incoming metric packets
+  - Listen on UDP port 5005 to participate in Hello
+    broadcasts (optional: gateway can also advertise)
+  - Parse and validate all incoming packets
+  - Maintain a live Health Matrix per node
+  - Expose the Health Matrix to server.py via:
+      * A local JSON file  (health_matrix.json)
+      * A simple REST API  (Flask on port 8080)
+  - Print a live terminal dashboard for debugging
+===================================================
+Requirements:
+    pip install flask
+    Python 3.9+
+===================================================
 """
 
-import asyncio
+import socket
+import threading
 import json
 import time
 import os
+import logging
+import copy
 import hmac
 import hashlib
-import socket as raw_socket
-import logging
 from datetime import datetime
-from pathlib import Path
+from flask import Flask, jsonify
 
-import httpx
-import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import HTMLResponse, FileResponse
+SHARED_KEY = b"mesh_secret_2106"
+
+# BLE scanner – uses bluezdbus (bleak) on the Raspberry Pi
+# Install with: pip install bleak
+BLE_SCAN_ENABLED = True   # set False if you don't have bleak installed
+try:
+    import asyncio
+    from bleak import BleakScanner
+except ImportError:
+    BLE_SCAN_ENABLED = False
+    print("[BLE-GW] bleak not installed – BLE scanning disabled")
+    print("[BLE-GW] Install with: pip install bleak")
 
 # ─────────────────────────────────────────────
 #  CONFIGURATION
 # ─────────────────────────────────────────────
-GATEWAY_URL      = "http://10.202.64.43:8080"
-DASHBOARD_PORT   = 9000
-POLL_INTERVAL    = 2.0
-HISTORY_MAX      = 100
-UDP_MESH_PORT    = 5005   # Port nodes listen on for ROUTE_PREF
+GATEWAY_LISTEN_IP   = "0.0.0.0"
+GATEWAY_PORT        = 5006          # Port that nodes send metrics to
+MESH_PORT           = 5005          # Port for Hello / mesh broadcast participation
+HEALTH_MATRIX_FILE  = "health_matrix.json"
+FLASK_PORT          = 8080          # REST API port for server.py
+LOG_FILE            = "gateway.log"
 
-SHARED_KEY = b"mesh_secret_2106"   # Must match node.py and gateway.py
+# Health thresholds (used to compute node health score)
+LATENCY_WARN_MS     = 100           # ms
+LATENCY_CRIT_MS     = 300           # ms
+PACKET_LOSS_WARN    = 0.05          # 5%
+PACKET_LOSS_CRIT    = 0.20          # 20%
+RSSI_WARN_DBM       = -75
+RSSI_CRIT_DBM       = -85
+NODE_TIMEOUT_SEC    = 60            # Mark node OFFLINE if no packet for this long
 
 # ─────────────────────────────────────────────
 #  LOGGING
 # ─────────────────────────────────────────────
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG, 
+    # level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler()
+    ]
 )
-log = logging.getLogger("dashboard-server")
+log = logging.getLogger("gateway")
 
 # ─────────────────────────────────────────────
-#  HMAC PACKET SIGNING
-#  Uses the same key and serialisation as gateway.py's verify_packet_raw:
-#    json.dumps(pkt, sort_keys=True, separators=(',', ':'))
-#  node.py's _sorted_json() produces identical output for well-formed dicts,
-#  so the signature will verify correctly on both ends.
+#  HEALTH MATRIX  (shared state, thread-safe via lock)
 # ─────────────────────────────────────────────
-def sign_packet(pkt_dict: dict) -> dict:
-    """Add HMAC-SHA256 'sig' field to pkt_dict in-place. Returns the dict."""
-    pkt_dict.pop("sig", None)   # remove any stale sig first
+matrix_lock   = threading.Lock()
+health_matrix = {}
+"""
+health_matrix structure:
+{
+  "NODE_01": {
+    "node_id"        : str,
+    "protocol"       : str,
+    "status"         : "ONLINE" | "OFFLINE" | "DEGRADED",
+    "health_score"   : float,        # 0-100
+    "last_seen"      : float,        # Unix timestamp
+    "last_seen_str"  : str,
+    "rssi"           : int,          # dBm
+    "avg_latency_ms" : float,
+    "packet_loss"    : float,        # 0.0 – 1.0
+    "throughput_est" : float,        # kbps estimate
+    "hop_count"      : int,
+    "seq_last"       : int,
+    "seq_expected"   : int,
+    "packets_received": int,
+    "packets_lost"   : int,
+    "neighbours"     : list[str],
+    "routing_table"  : dict,
+    "latency_history": list[float],  # last 20 samples
+    "rssi_history"   : list[int],    # last 20 samples
+    "alerts"         : list[str]
+  },
+  ...
+}
+"""
+
+# ─────────────────────────────────────────────
+#  BLE PACKET DECODER
+#  Must match encode_ble() in node.py exactly
+#  Layout: 2B magic | 1B type | 7B node_id | 1B seq |
+#          4B timestamp | 1B rssi | 2B latency | 1B loss
+# ─────────────────────────────────────────────
+BLE_MAGIC           = bytes([0xAA, 0xBB])
+BLE_PKT_TYPE_HELLO  = 0x01
+BLE_PKT_TYPE_METRIC = 0x02
+BLE_PKT_TYPE_PING   = 0x03
+BLE_PKT_TYPE_PONG   = 0x04
+
+def decode_ble_payload(manuf_data):
+    """Decode manufacturer-specific BLE advertisement from a mesh node."""
+    try:
+        b = bytes(manuf_data)
+        if len(b) < 19 or b[0:2] != BLE_MAGIC:
+            return None
+        node_id = b[3:10].rstrip(b'\x00').decode('utf-8')
+        if not node_id or not node_id.startswith("NODE_") or len(node_id) > 7:
+            return None
+        return {
+            "pkt_type": b[2],
+            "node_id" : node_id,
+            "seq"     : b[10],
+            "ts"      : int.from_bytes(b[11:15], 'big'),
+            "rssi"    : b[15] - 128,
+            "lat_ms"  : ((b[16] << 8) | b[17]) / 10.0,
+            "loss"    : b[18] / 255.0
+        }
+    except Exception:
+        return None
+
+
+def find_manuf_data_gw(adv_data_bytes):
+    """Extract manufacturer-specific (type 0xFF) data from raw BLE adv bytes."""
+    b   = bytes(adv_data_bytes)
+    idx = 0
+    while idx < len(b) - 1:
+        length  = b[idx]
+        if length == 0:
+            break
+        ad_type = b[idx + 1]
+        if ad_type == 0xFF and length >= 3:
+            return b[idx + 2: idx + 1 + length]
+        idx += 1 + length
+    return None
+seq_tracker = {}   # { node_id: { last_seq, expected_seq } }
+
+def sign_packet(pkt_dict):
+    """Add HMAC-SHA256 signature to outgoing packet.
+    Uses sort_keys=True to match server.py and node_main.py's _sorted_json()."""
+    pkt_dict.pop("sig", None)
     payload = json.dumps(pkt_dict, sort_keys=True, separators=(',', ':')).encode()
     sig = hmac.new(SHARED_KEY, payload, hashlib.sha256).hexdigest()
     pkt_dict["sig"] = sig
     return pkt_dict
 
-# ─────────────────────────────────────────────
-#  APP SETUP
-# ─────────────────────────────────────────────
-from contextlib import asynccontextmanager
-
-@asynccontextmanager
-async def lifespan(application):
-    asyncio.create_task(poll_gateway())
-    log.info(f"Dashboard server started on port {DASHBOARD_PORT}")
-    log.info(f"Polling gateway at {GATEWAY_URL}")
-    yield
-
-app = FastAPI(title="IoT Mesh Dashboard", lifespan=lifespan)
-
-ws_clients: set[WebSocket] = set()
-
-cached_data = {
-    "health_matrix": {},
-    "topology": {"edges": []},
-    "history": {},
-    "last_update": 0,
-    "gateway_online": False,
-}
+def verify_packet(pkt_dict):
+    """Verify HMAC-SHA256 signature on incoming packet. Returns True if valid."""
+    sig = pkt_dict.pop("sig", None)
+    if not sig:
+        return False
+    payload = json.dumps(pkt_dict).encode()
+    expected = hmac.new(SHARED_KEY, payload, hashlib.sha256).hexdigest()
+    return sig == expected
 
 # ─────────────────────────────────────────────
-#  HISTORY TRACKER
+#  HEALTH SCORE CALCULATOR
 # ─────────────────────────────────────────────
-def update_history(nodes: dict):
-    now = datetime.now().strftime("%H:%M:%S")
-    history = cached_data["history"]
-
-    for node_id, data in nodes.items():
-        if node_id not in history:
-            history[node_id] = {
-                "timestamps": [],
-                "latency_wifi": [],
-                "latency_ble": [],
-                "rssi_wifi": [],
-                "rssi_ble": [],
-                "packet_loss_wifi": [],
-                "packet_loss_ble": [],
-                "health_score": [],
-            }
-        h = history[node_id]
-        h["timestamps"].append(now)
-
-        metrics = data.get("metrics", {})
-
-        h["latency_wifi"].append(metrics.get("wifi_avg_latency_ms", data.get("avg_latency_ms", 0)))
-        h["rssi_wifi"].append(metrics.get("wifi_rssi", data.get("rssi", -99)))
-        h["packet_loss_wifi"].append(metrics.get("wifi_packet_loss", data.get("packet_loss", 0)))
-
-        h["latency_ble"].append(metrics.get("ble_avg_latency_ms", 0))
-        h["rssi_ble"].append(metrics.get("ble_rssi", -99))
-        h["packet_loss_ble"].append(metrics.get("ble_packet_loss", 0))
-
-        h["health_score"].append(data.get("health_score", 0))
-
-        for key in h:
-            if len(h[key]) > HISTORY_MAX:
-                h[key] = h[key][-HISTORY_MAX:]
-
-# ─────────────────────────────────────────────
-#  GATEWAY POLLER
-# ─────────────────────────────────────────────
-async def broadcast_to_clients(payload):
-    dead = set()
-    for ws in list(ws_clients):
-        try:
-            await ws.send_json(payload)
-        except Exception:
-            dead.add(ws)
-    for d in dead:
-        ws_clients.discard(d)
-
-
-async def poll_gateway():
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        while True:
-            try:
-                resp = await client.get(f"{GATEWAY_URL}/health_matrix")
-                if resp.status_code == 200:
-                    matrix_data = resp.json()
-                    cached_data["health_matrix"] = matrix_data
-                    cached_data["gateway_online"] = True
-                    cached_data["last_update"] = time.time()
-
-                    nodes = matrix_data.get("nodes", {})
-                    update_history(nodes)
-                else:
-                    cached_data["gateway_online"] = False
-                    log.warning(f"Gateway returned HTTP {resp.status_code}")
-
-                try:
-                    topo_resp = await client.get(f"{GATEWAY_URL}/topology")
-                    if topo_resp.status_code == 200:
-                        cached_data["topology"] = topo_resp.json()
-                except Exception:
-                    pass
-
-                await broadcast_to_clients({
-                    "type": "update",
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "gateway_online": cached_data["gateway_online"],
-                    "health_matrix": cached_data["health_matrix"],
-                    "topology": cached_data["topology"],
-                    "history": cached_data["history"],
-                })
-
-            except httpx.ConnectError:
-                cached_data["gateway_online"] = False
-                log.warning("Gateway unreachable - retrying...")
-                await broadcast_to_clients({
-                    "type": "update",
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "gateway_online": False,
-                    "health_matrix": cached_data["health_matrix"],
-                    "topology": cached_data["topology"],
-                    "history": cached_data["history"],
-                })
-
-            except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.TimeoutException) as e:
-                cached_data["gateway_online"] = False
-                log.warning(f"Gateway timeout: {type(e).__name__}")
-                await broadcast_to_clients({
-                    "type": "update",
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "gateway_online": False,
-                    "health_matrix": cached_data["health_matrix"],
-                    "topology": cached_data["topology"],
-                    "history": cached_data["history"],
-                })
-
-            except Exception as e:
-                cached_data["gateway_online"] = False
-                log.error(f"Poll error: {type(e).__name__}: {e}")
-                await broadcast_to_clients({
-                    "type": "update",
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "gateway_online": False,
-                    "health_matrix": cached_data["health_matrix"],
-                    "topology": cached_data["topology"],
-                    "history": cached_data["history"],
-                })
-
-            await asyncio.sleep(POLL_INTERVAL)
-
-# ─────────────────────────────────────────────
-#  ROUTES: HTML PAGES
-# ─────────────────────────────────────────────
-@app.get("/")
-async def serve_dashboard():
-    html_path = Path(__file__).parent / "dashboard.html"
-    return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
-
-
-@app.get("/path")
-async def serve_path_analysis():
-    html_path = Path(__file__).parent / "path_analysis.html"
-    return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
-
-
-# ─────────────────────────────────────────────
-#  ROUTES: WEBSOCKET
-# ─────────────────────────────────────────────
-@app.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket):
-    await ws.accept()
-    ws_clients.add(ws)
-    log.info(f"WebSocket client connected ({len(ws_clients)} total)")
-
-    try:
-        await ws.send_json({
-            "type": "update",
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "gateway_online": cached_data["gateway_online"],
-            "health_matrix": cached_data["health_matrix"],
-            "topology": cached_data["topology"],
-            "history": cached_data["history"],
-        })
-    except Exception:
-        pass
-
-    try:
-        while True:
-            data = await ws.receive_text()
-    except (WebSocketDisconnect, RuntimeError, Exception):
-        ws_clients.discard(ws)
-        log.info(f"WebSocket client disconnected ({len(ws_clients)} remaining)")
-
-
-# ─────────────────────────────────────────────
-#  ROUTES: REST API
-# ─────────────────────────────────────────────
-@app.get("/api/health")
-async def api_health():
-    return {
-        "server": "running",
-        "gateway_online": cached_data["gateway_online"],
-        "last_update": cached_data["last_update"],
-        "connected_clients": len(ws_clients),
-    }
-
-
-@app.get("/api/history/{node_id}")
-async def api_node_history(node_id: str):
-    h = cached_data["history"].get(node_id)
-    if h:
-        return h
-    return {"error": "Node not found"}
-
-
-# ═══════════════════════════════════════════════════
-#  PATH ANALYSIS — BACKEND CALCULATION
-#  Same formulas as node.py compute_cost()
-# ═══════════════════════════════════════════════════
-
-WEIGHT_PROFILES = {
-    "latency":  {"w_latency": 0.8, "w_packet_loss": 0.15, "w_power": 0.05},
-    "cost":     {"w_latency": 0.3, "w_packet_loss": 0.5,  "w_power": 0.2},
-    "power":    {"w_latency": 0.1, "w_packet_loss": 0.2,  "w_power": 0.7},
-    "balanced": {"w_latency": 0.5, "w_packet_loss": 0.3,  "w_power": 0.2},
-}
-
-
-def compute_cost(latency_ms, packet_loss, power_cost, weights):
-    """Same formula as node.py compute_cost."""
-    return (weights["w_latency"] * (latency_ms / 100.0)
-            + weights["w_packet_loss"] * packet_loss
-            + weights["w_power"] * power_cost)
-
-
-def rssi_to_power_cost(rssi):
-    """Same formula as node.py: weaker RSSI = higher power cost."""
-    return min(1.0, max(0.05, (-rssi - 50) / 40.0))
-
-
-def analyze_hop(from_id, to_id, from_node, route_entry, weights):
-    """Recalculate WiFi vs BLE cost for a single hop."""
-    metrics = from_node.get("metrics", {})
-
-    w_lat = (route_entry or {}).get("wifi_lat") or metrics.get("wifi_avg_latency_ms") or 0
-    w_loss = metrics.get("wifi_packet_loss", 0)
-    node_proto  = from_node.get("protocol", "WiFi")
-    is_ble_node = "BLE" in node_proto
-    _wifi_rssi_raw = metrics.get("wifi_rssi")
-    if _wifi_rssi_raw is not None:
-        w_rssi = _wifi_rssi_raw
-    elif is_ble_node:
-        w_rssi = -99
-    else:
-        w_rssi = from_node.get("rssi", -99)
-    w_power = metrics.get("wifi_power_cost") or rssi_to_power_cost(w_rssi)
-
-    b_lat = (route_entry or {}).get("ble_lat") or metrics.get("ble_avg_latency_ms") or 0
-    b_loss = metrics.get("ble_packet_loss", 0)
-    _ble_rssi_raw = metrics.get("ble_rssi")
-    if _ble_rssi_raw is not None:
-        b_rssi = _ble_rssi_raw
-    elif is_ble_node:
-        b_rssi = from_node.get("rssi", -99)
-    else:
-        b_rssi = -99
-    b_power = metrics.get("ble_power_cost") or rssi_to_power_cost(b_rssi)
-
-    w_avail = w_rssi > -99 or w_lat > 0
-    b_avail = b_rssi > -99 or b_lat > 0
-
-    w_cost = compute_cost(w_lat, w_loss, w_power, weights) if w_avail else 9999
-    b_cost = compute_cost(b_lat, b_loss, b_power, weights) if b_avail else 9999
-
-    if w_cost <= b_cost:
-        best = "WiFi"
-        best_cost, best_lat, best_power, best_rssi, best_loss = w_cost, w_lat, w_power, w_rssi, w_loss
-    else:
-        best = "BLE"
-        best_cost, best_lat, best_power, best_rssi, best_loss = b_cost, b_lat, b_power, b_rssi, b_loss
-
-    proto = from_node.get("protocol", "WiFi")
-    node_decided = (route_entry or {}).get("best_protocol") or ("BLE" if "BLE" in proto else "WiFi")
-
-    return {
-        "from": from_id, "to": to_id,
-        "protocol": best,
-        "node_decided": node_decided,
-        "changed": best != node_decided,
-        "cost": round(best_cost, 6),
-        "wifi_cost": round(w_cost, 6) if w_avail else None,
-        "ble_cost": round(b_cost, 6) if b_avail else None,
-        "latency": round(best_lat, 2),
-        "power_cost": round(best_power, 4),
-        "rssi": best_rssi,
-        "packet_loss": round(best_loss, 4),
-    }
-
-
-def trace_path(src, dst, nodes, weights):
-    """Trace routing path from src to dst, recalculating costs with given weights."""
-    if src == dst:
-        return []
-
-    hops = []
-    visited = set()
-    current = src
-
-    while current != dst and len(hops) < 10:
-        if current in visited:
-            break
-        visited.add(current)
-
-        if current == "GATEWAY":
-            nd = nodes.get(dst)
-            if nd:
-                hops.append(analyze_hop("GATEWAY", dst, nd, None, weights))
-            break
-
-        from_node = nodes.get(current)
-        if not from_node:
-            break
-
-        if dst == "GATEWAY":
-            hops.append(analyze_hop(current, "GATEWAY", from_node, None, weights))
-            break
-
-        rt = from_node.get("routing_table", {})
-        route_entry = rt.get(dst)
-
-        if route_entry:
-            next_hop = route_entry.get("next_hop", dst)
-            hops.append(analyze_hop(current, next_hop, from_node, route_entry, weights))
-            if next_hop == dst:
-                break
-            current = next_hop
-        else:
-            neighbours = from_node.get("neighbours", [])
-            if dst in neighbours:
-                hops.append(analyze_hop(current, dst, from_node, None, weights))
-                break
-
-            dst_node = nodes.get(dst)
-            if dst_node and "GATEWAY" not in visited:
-                hops.append(analyze_hop(current, "GATEWAY", from_node, None, weights))
-                hops.append(analyze_hop("GATEWAY", dst, dst_node, None, weights))
-                break
-
-            hops.append({
-                "from": current, "to": dst, "protocol": "?",
-                "node_decided": "?", "changed": False, "unreachable": True,
-                "cost": 0, "wifi_cost": None, "ble_cost": None,
-                "latency": 0, "power_cost": 0, "rssi": -99, "packet_loss": 1.0,
-            })
-            break
-
-    return hops
-
-
-# ═══════════════════════════════════════════════════
-#  SEND ROUTE_PREF DIRECTLY TO NODE VIA UDP
-# ═══════════════════════════════════════════════════
-
-def send_route_pref_udp(node_id, mode, weights, node_ip):
+def compute_health_score(node_data):
     """
-    Send a signed ROUTE_PREF UDP packet directly to a node.
-    Returns (ok: bool, message: str)
+    Returns a 0-100 health score and a list of alert strings.
+    100 = perfect, 0 = completely failed.
     """
-    cmd = {
-        "type":           "ROUTE_PREF",
-        "node_id":        "NODE_SV",
-        "target":         node_id,
-        "mode":           mode,
-        "w_latency":      weights["w_latency"],
-        "w_packet_loss":  weights["w_packet_loss"],
-        "w_power":        weights["w_power"],
-        # "timestamp":      time.time(),
-        "timestamp":     int(time.time()), 
-    }
-    sign_packet(cmd)   # ← HMAC sign before sending
+    score  = 100.0
+    alerts = []
 
-    s = None
-    try:
-        s = raw_socket.socket(raw_socket.AF_INET, raw_socket.SOCK_DGRAM)
-        s.settimeout(2.0)
-        s.sendto(json.dumps(cmd).encode(), (node_ip, UDP_MESH_PORT))
-        log.info(f"[RoutePref] Sent {mode} weights to {node_id} @ {node_ip}")
-        return True, f"Sent to {node_id} @ {node_ip}"
-    except Exception as e:
-        log.error(f"[RoutePref] Failed to send to {node_id} @ {node_ip}: {e}")
-        return False, str(e)
-    finally:
-        if s:
-            s.close()
+    latency = node_data.get("avg_latency_ms", 0)
+    if latency >= LATENCY_CRIT_MS:
+        score -= 30
+        alerts.append(f"CRITICAL latency: {latency:.1f} ms")
+    elif latency >= LATENCY_WARN_MS:
+        score -= 15
+        alerts.append(f"HIGH latency: {latency:.1f} ms")
 
+    loss = node_data.get("packet_loss", 0.0)
+    if loss >= PACKET_LOSS_CRIT:
+        score -= 30
+        alerts.append(f"CRITICAL packet loss: {loss*100:.1f}%")
+    elif loss >= PACKET_LOSS_WARN:
+        score -= 15
+        alerts.append(f"HIGH packet loss: {loss*100:.1f}%")
 
-# ─────────────────────────────────────────────
-#  API: PATH ANALYZE (calculate only)
-# ─────────────────────────────────────────────
-@app.post("/api/path_analyze")
-async def api_path_analyze(request: Request):
-    body = await request.json()
-    src = body.get("src", "")
-    dst = body.get("dst", "")
-    mode = body.get("mode", "balanced")
+    rssi = node_data.get("rssi", -99)
+    if rssi <= RSSI_CRIT_DBM:
+        score -= 20
+        alerts.append(f"CRITICAL signal: {rssi} dBm")
+    elif rssi <= RSSI_WARN_DBM:
+        score -= 10
+        alerts.append(f"WEAK signal: {rssi} dBm")
 
-    if not src or not dst:
-        return {"error": "src and dst required"}
-    if mode not in WEIGHT_PROFILES:
-        return {"error": f"Invalid mode. Use: {list(WEIGHT_PROFILES.keys())}"}
+    hops = node_data.get("hop_count", 0)
+    if hops > 3:
+        score -= (hops - 3) * 5
+        alerts.append(f"High hop count: {hops}")
 
-    nodes = cached_data.get("health_matrix", {}).get("nodes", {})
-    weights = WEIGHT_PROFILES[mode]
-    hops = trace_path(src, dst, nodes, weights)
+    status = "ONLINE"
+    if score < 40:
+        status = "DEGRADED"
+    if score <= 0 or node_data.get("status") == "OFFLINE":
+        status = "OFFLINE"
+        score  = 0
 
-    total_lat = sum(h.get("latency", 0) for h in hops)
-    total_cost = sum(h.get("cost", 0) for h in hops if h.get("cost", 0) < 9999)
-
-    return {
-        "src": src, "dst": dst, "mode": mode,
-        "weights": weights,
-        "hops": hops,
-        "total_hops": len(hops),
-        "total_latency": round(total_lat, 2),
-        "total_cost": round(total_cost, 6),
-    }
+    return max(0.0, round(score, 1)), status, alerts
 
 
 # ─────────────────────────────────────────────
-#  API: PATH APPLY (calculate + send to nodes)
+#  PROCESS INCOMING METRIC PACKET
 # ─────────────────────────────────────────────
-@app.post("/api/path_apply")
-async def api_path_apply(request: Request):
-    body = await request.json()
-    src = body.get("src", "")
-    dst = body.get("dst", "")
-    mode = body.get("mode", "balanced")
-
-    if not src or not dst:
-        return {"error": "src and dst required"}
-    if mode not in WEIGHT_PROFILES:
-        return {"error": f"Invalid mode. Use: {list(WEIGHT_PROFILES.keys())}"}
-
-    nodes = cached_data.get("health_matrix", {}).get("nodes", {})
-    weights = WEIGHT_PROFILES[mode]
-    hops = trace_path(src, dst, nodes, weights)
-
-    node_ids = set()
-    for h in hops:
-        if h["from"] != "GATEWAY":
-            node_ids.add(h["from"])
-        if h["to"] != "GATEWAY":
-            node_ids.add(h["to"])
-
-    if not node_ids:
-        return {"error": "No nodes in path to update", "hops": hops}
-
-    results = {}
-    for nid in node_ids:
-        node_data = nodes.get(nid)
-        if not node_data:
-            results[nid] = {"ok": False, "message": "Node not in health matrix"}
-            continue
-
-        sender_ip = node_data.get("sender_ip", "")
-        if not sender_ip or sender_ip in ("BLE-direct", "BLE-only", ""):
-            results[nid] = {
-                "ok": False,
-                "message": "BLE-only node — no WiFi IP to send UDP"
-            }
-            continue
-
-        ok, msg = send_route_pref_udp(nid, mode, weights, sender_ip)
-        results[nid] = {"ok": ok, "message": msg}
-
-    success_count = sum(1 for r in results.values() if r["ok"])
-    fail_count = len(results) - success_count
-
-    return {
-        "src": src, "dst": dst, "mode": mode,
-        "weights": weights,
-        "hops": hops,
-        "node_results": results,
-        "success_count": success_count,
-        "fail_count": fail_count,
-        "total_nodes": len(node_ids),
-    }
-
-
-# ─────────────────────────────────────────────
-#  API: ROUTE PREF SET  (single node)
-# ─────────────────────────────────────────────
-@app.post("/api/route_pref_set")
-async def api_route_pref_set(request: Request):
-    body = await request.json()
-    node_id = body.get("node_id", "")
-    mode    = body.get("mode", "balanced")
-
+def process_metric_packet(pkt, sender_ip):
+    node_id  = pkt.get("node_id")
     if not node_id:
-        return {"ok": False, "error": "node_id required"}
-    if mode not in WEIGHT_PROFILES:
-        return {"ok": False, "error": f"Invalid mode. Use: {list(WEIGHT_PROFILES.keys())}"}
+        return
 
-    nodes = cached_data.get("health_matrix", {}).get("nodes", {})
-    node_data = nodes.get(node_id)
-    if not node_data:
-        return {"ok": False, "error": f"Node {node_id!r} not in health matrix"}
+    now      = time.time()
+    now_str  = datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S")
+    metrics  = pkt.get("metrics", {})
+    seq      = pkt.get("seq_number", 0)
+    rt       = pkt.get("routing_table", {})
+    nb       = pkt.get("neighbours", [])
+    rssi     = pkt.get("rssi", -99)
+    hops     = pkt.get("hop_count", 0)
+    protocol = pkt.get("protocol", "WiFi")
 
-    sender_ip = node_data.get("sender_ip", "")
-    if not sender_ip or sender_ip in ("BLE-direct", "BLE-only", ""):
-        return {"ok": False, "error": "BLE-only node — no WiFi IP available for UDP delivery"}
+    # Use wifi_avg_latency_ms (the actual key node.py sends); fall back to ble if wifi absent
+    latency   = metrics.get("wifi_avg_latency_ms", metrics.get("ble_avg_latency_ms", 0.0))
+    # Use wifi_packet_loss (the actual key node.py sends); fall back to ble if wifi absent
+    loss      = metrics.get("wifi_packet_loss",    metrics.get("ble_packet_loss",    0.0))
+    throughput= metrics.get("throughput_est", 0.0)
 
-    weights = WEIGHT_PROFILES[mode]
-    ok, msg = send_route_pref_udp(node_id, mode, weights, sender_ip)
-    return {"ok": ok, "message": msg, "mode": mode, "weights": weights}
+    with matrix_lock:
+        existing = health_matrix.get(node_id, {})
+
+        # ── Sequence number tracking ───────────────────────────────
+        if node_id not in seq_tracker:
+            seq_tracker[node_id] = {"last_seq": seq, "expected_seq": seq + 1,
+                                     "total_received": 1, "total_lost": 0}
+        else:
+            st     = seq_tracker[node_id]
+            gap    = seq - st["last_seq"] - 1
+            # Only count positive gaps as losses; negative means out-of-order
+            # delivery or seq wrap-around — don't subtract from total_lost.
+            if gap > 0:
+                st["total_lost"] += gap
+                log.warning(f"[{node_id}] Detected {gap} lost packet(s) (seq {st['last_seq']+1}–{seq-1})")
+            elif gap < -1:
+                log.debug(f"[{node_id}] Out-of-order or wrapped seq: last={st['last_seq']} new={seq}")
+            st["total_received"] += 1
+            st["last_seq"]        = seq
+            st["expected_seq"]    = seq + 1
+
+        st          = seq_tracker[node_id]
+        total_rx    = st["total_received"]
+        total_lost  = st["total_lost"]
+        real_loss   = total_lost / (total_rx + total_lost) if (total_rx + total_lost) > 0 else 0.0
+
+        # ── Rolling histories ───────────────────────────────────────
+        lat_hist  = existing.get("latency_history", [])
+        rssi_hist = existing.get("rssi_history", [])
+        lat_hist.append(latency)
+        rssi_hist.append(rssi)
+        if len(lat_hist)  > 20: lat_hist.pop(0)
+        if len(rssi_hist) > 20: rssi_hist.pop(0)
+
+        # ── Preserve WiFi sender_ip — never overwrite a real IP with a BLE placeholder ──
+        # NODE_gw (dual-protocol) sends WiFi metrics AND BLE beacons.
+        # The BLE scanner fires ~every 10 s with sender_ip="BLE-direct", which would
+        # constantly clobber the valid WiFi IP.  Rule: a real IP always wins.
+        BLE_PLACEHOLDERS = ("BLE-direct", "BLE-only", "")
+        existing_ip = existing.get("sender_ip", "")
+        existing_wifi_ip = existing.get("wifi_sender_ip", "")
+        if existing_ip not in BLE_PLACEHOLDERS and sender_ip in BLE_PLACEHOLDERS:
+            sender_ip = existing_ip          # keep the real IP
+        # Also carry forward wifi_sender_ip if we have one and new packet is BLE
+        wifi_sender_ip = existing_wifi_ip
+        if sender_ip not in BLE_PLACEHOLDERS:
+            wifi_sender_ip = sender_ip       # update to latest real IP
+
+        # ── Build updated node entry ────────────────────────────────
+        node_data = {
+            "node_id"         : node_id,
+            "protocol"        : protocol,
+            "sender_ip"       : sender_ip,
+            "wifi_sender_ip"  : wifi_sender_ip,   # always a real IP if ever seen over WiFi
+            "last_seen"       : now,
+            "last_seen_str"   : now_str,
+            "rssi"            : rssi,
+            "avg_latency_ms"  : latency,
+            "packet_loss"     : round(real_loss, 4),
+            "throughput_est"  : throughput,
+            "hop_count"       : hops,
+            "seq_last"        : seq,
+            "seq_expected"    : seq + 1,
+            "packets_received": total_rx,
+            "packets_lost"    : total_lost,
+            "neighbours"      : nb,
+            "routing_table"   : rt,
+            "latency_history" : lat_hist,
+            "rssi_history"    : rssi_hist,
+            # Store full per-protocol metrics so server.py and frontend can
+            # access wifi_rssi, ble_rssi, wifi_packet_loss, ble_packet_loss etc.
+            "metrics"         : metrics,
+        }
+
+        score, status, alerts = compute_health_score(node_data)
+        node_data["health_score"]   = score
+        node_data["status"]         = status
+        node_data["alerts"]         = alerts
+
+        health_matrix[node_id] = node_data
+
+    log.info(
+        f"[{node_id}] Protocol={protocol} Seq={seq} RSSI={rssi}dBm "
+        f"Latency={latency:.1f}ms Loss={real_loss*100:.1f}% "
+        f"Hops={hops} Score={score} Status={status}"
+    )
 
 
 # ─────────────────────────────────────────────
-#  API: GATEWAY DIAGNOSTIC
+#  PROCESS HELLO PACKET (optional – gateway learns topology)
 # ─────────────────────────────────────────────
-@app.get("/api/gateway_check")
-async def api_gateway_check():
-    results = {}
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        for endpoint in ["/ping", "/health_matrix", "/summary", "/topology"]:
-            try:
-                resp = await client.get(f"{GATEWAY_URL}{endpoint}")
-                results[endpoint] = {"status": resp.status_code, "ok": resp.status_code == 200}
-            except Exception as e:
-                results[endpoint] = {"status": 0, "ok": False, "error": str(e)}
-    return {
-        "gateway_url": GATEWAY_URL,
-        "endpoints": results,
-        "gateway_online": cached_data["gateway_online"],
-    }
+def process_hello_packet(pkt, sender_ip):
+    node_id = pkt.get("node_id")
+    if not node_id:
+        return
+    now     = time.time()
+    rssi    = pkt.get("rssi", -99)
+    rt      = pkt.get("routing", {})
+
+    with matrix_lock:
+        if node_id not in health_matrix:
+            health_matrix[node_id] = {
+                "node_id"    : node_id,
+                "protocol"   : pkt.get("protocol", "WiFi"),
+                "status"     : "ONLINE",
+                "health_score": 100.0,
+                "last_seen"  : now,
+                "last_seen_str": datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S"),
+                "rssi"       : rssi,
+                "avg_latency_ms" : 0.0,
+                "packet_loss"    : 0.0,
+                "routing_table": rt,
+                "sender_ip"  : sender_ip,
+                "alerts"     : [],
+                "packets_received": 0,
+                "packets_lost": 0,
+                # Initialise metrics dict so downstream code never gets KeyError
+                "metrics"    : {},
+            }
+            log.info(f"[Hello] New node discovered: {node_id} @ {sender_ip}")
+        else:
+            health_matrix[node_id]["last_seen"]     = now
+            health_matrix[node_id]["last_seen_str"] = datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S")
+            health_matrix[node_id]["rssi"]          = rssi
+            health_matrix[node_id]["routing_table"] = rt
+            # Keep protocol and sender_ip current in case node switched WiFi↔BLE
+            health_matrix[node_id]["protocol"]      = pkt.get("protocol", health_matrix[node_id].get("protocol", "WiFi"))
+            # Preserve WiFi IP — only update sender_ip if the new value is a real IP
+            # or we don't have a real IP yet
+            BLE_PLACEHOLDERS = ("BLE-direct", "BLE-only", "")
+            existing_ip = health_matrix[node_id].get("sender_ip", "")
+            if existing_ip in BLE_PLACEHOLDERS or sender_ip not in BLE_PLACEHOLDERS:
+                health_matrix[node_id]["sender_ip"] = sender_ip
+            if sender_ip not in BLE_PLACEHOLDERS:
+                health_matrix[node_id]["wifi_sender_ip"] = sender_ip
 
 
 # ─────────────────────────────────────────────
-#  ENTRY POINT
+#  MARK OFFLINE NODES
 # ─────────────────────────────────────────────
+def watchdog_loop():
+    """Background thread – marks nodes OFFLINE if they stop sending."""
+    while True:
+        now = time.time()
+        with matrix_lock:
+            for node_id, data in health_matrix.items():
+                age = now - data.get("last_seen", now)
+                if age > NODE_TIMEOUT_SEC and data.get("status") != "OFFLINE":
+                    health_matrix[node_id]["status"]       = "OFFLINE"
+                    health_matrix[node_id]["health_score"] = 0
+                    health_matrix[node_id]["alerts"]       = [f"Node silent for {int(age)}s"]
+                    log.warning(f"[Watchdog] {node_id} marked OFFLINE (silent {int(age)}s)")
+        time.sleep(10)
+
+
+# ─────────────────────────────────────────────
+#  PERSIST HEALTH MATRIX TO FILE
+# ─────────────────────────────────────────────
+def persist_loop():
+    """Write health_matrix.json every 5 seconds for server.py to read."""
+    while True:
+        with matrix_lock:
+            # Deep-copy inside the lock so json.dump (which runs outside
+            # the lock) serialises a stable snapshot.  dict(health_matrix)
+            # is only a shallow copy — node sub-dicts (e.g. latency_history)
+            # would still be shared references and could be mutated mid-dump.
+            snapshot = {
+                "gateway_timestamp": time.time(),
+                "gateway_time_str" : datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "node_count"       : len(health_matrix),
+                "nodes"            : copy.deepcopy(health_matrix)
+            }
+        with open(HEALTH_MATRIX_FILE, "w") as f:
+            json.dump(snapshot, f, indent=2)
+        time.sleep(5)
+
+
+# ─────────────────────────────────────────────
+#  TERMINAL DASHBOARD  (prints to stdout)
+# ─────────────────────────────────────────────
+def print_dashboard():
+    os.system('clear' if os.name == 'posix' else 'cls')
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with matrix_lock:
+        nodes = dict(health_matrix)
+
+    print("╔══════════════════════════════════════════════════════════════════════════════╗")
+    print(f"║  IoT Mesh Gateway  │  {now_str}  │  Nodes: {len(nodes):<3}                     ║")
+    print("╠══════════════════════════════════════════════════════════════════════════════╣")
+    print(f"  {'Node ID':<12} {'Status':<10} {'Score':<7} {'RSSI':<8} {'Latency':<12} {'Loss':<8} {'Hops':<6} {'IP'}")
+    print("  " + "─" * 76)
+
+    for node_id, d in sorted(nodes.items()):
+        status  = d.get("status", "?")
+        score   = d.get("health_score", 0)
+        rssi    = d.get("rssi", -99)
+        lat     = d.get("avg_latency_ms", 0)
+        loss    = d.get("packet_loss", 0) * 100
+        hops    = d.get("hop_count", 0)
+        ip      = d.get("sender_ip", "N/A")
+
+        status_icon = {"ONLINE": "✅", "DEGRADED": "⚠️ ", "OFFLINE": "❌"}.get(status, "?")
+        score_bar   = ("█" * int(score // 10)).ljust(10)
+        print(f"  {node_id:<12} {status_icon} {status:<8} [{score_bar}] {score:<4} "
+              f"{rssi:<8} {lat:<12.1f} {loss:<7.1f}% {hops:<6} {ip}")
+
+        for alert in d.get("alerts", []):
+            print(f"    ⚡  {alert}")
+
+    print("╚══════════════════════════════════════════════════════════════════════════════╝")
+    print(f"  [REST API] http://localhost:{FLASK_PORT}/health_matrix")
+    print(f"  [JSON File] {os.path.abspath(HEALTH_MATRIX_FILE)}")
+
+
+def dashboard_loop():
+    while True:
+        print_dashboard()
+        time.sleep(5)
+
+
+# ─────────────────────────────────────────────
+#  UDP LISTENER – GATEWAY PORT (metrics)
+# ─────────────────────────────────────────────
+def udp_metric_listener():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((GATEWAY_LISTEN_IP, GATEWAY_PORT))
+
+    while True:
+        try:
+            raw, addr = sock.recvfrom(4096)  # keep raw bytes
+            sender_ip = addr[0]
+
+            if not verify_packet_raw(raw):   # verify BEFORE parsing
+                log.warning(f"[Security] Rejected invalid packet from {sender_ip}")
+                continue
+
+            pkt   = json.loads(raw.decode('utf-8'))
+            pkt.pop("sig", None)             # strip sig before processing
+            ptype = pkt.get("type")
+            if ptype == "METRIC":
+                process_metric_packet(pkt, sender_ip)
+            elif ptype == "HELLO":
+                process_hello_packet(pkt, sender_ip)
+        except json.JSONDecodeError:
+            log.warning(f"[UDP] Malformed JSON from {addr}")
+        except Exception as e:
+            log.error(f"[UDP] Metric listener error: {e}")
+            
+def verify_packet_raw(raw_bytes):
+    try:
+        pkt = json.loads(raw_bytes.decode('utf-8'))
+        sig = pkt.pop("sig", None)
+        if not sig:
+            log.warning("[Security] Packet missing 'sig' field entirely")
+            return False
+
+        payload  = json.dumps(pkt, sort_keys=True, separators=(',', ':')).encode()
+        expected = hmac.new(SHARED_KEY, payload, hashlib.sha256).hexdigest()
+
+        # ── Debug: log first 20 chars of each sig so you can spot the mismatch ──
+        log.debug(f"[Security] sig_received : {sig[:20]}...")
+        log.debug(f"[Security] sig_expected : {expected[:20]}...")
+        log.debug(f"[Security] payload_preview: {payload[:80]}")
+
+        match = hmac.compare_digest(sig, expected)
+        if not match:
+            log.warning(f"[Security] HMAC mismatch — received={sig[:20]}... expected={expected[:20]}...")
+            log.warning(f"[Security] Payload used for verify: {payload[:120]}")
+        return match
+    except Exception as e:
+        log.warning(f"[Security] verify_packet_raw exception: {e}")
+        return False
+
+# ─────────────────────────────────────────────
+#  UDP LISTENER – MESH PORT (hello broadcast)
+# ─────────────────────────────────────────────
+def udp_mesh_listener():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.bind((GATEWAY_LISTEN_IP, MESH_PORT))
+    log.info(f"[UDP] Mesh Hello listener on port {MESH_PORT}")
+
+    while True:
+        try:
+            raw, addr = sock.recvfrom(4096)
+            sender_ip = addr[0]
+
+            if not verify_packet_raw(raw):        # ← was verify_packet, now consistent
+                log.warning(f"[Security] Rejected invalid packet from {sender_ip}")
+                continue
+
+            pkt = json.loads(raw.decode('utf-8'))
+            pkt.pop("sig", None)
+            if pkt.get("type") == "HELLO":
+                process_hello_packet(pkt, sender_ip)
+        except Exception as e:
+            log.error(f"[UDP] Mesh listener error: {e}")
+
+
+# ─────────────────────────────────────────────
+#  FLASK REST API  (for server.py)
+# ─────────────────────────────────────────────
+flask_app = Flask(__name__)
+
+@flask_app.route("/health_matrix", methods=["GET"])
+def api_health_matrix():
+    """Full health matrix – server.py polls this."""
+    with matrix_lock:
+        # Deep-copy inside lock so Flask/jsonify serialises a stable snapshot
+        data = {
+            "gateway_timestamp": time.time(),
+            "gateway_time_str" : datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "node_count"       : len(health_matrix),
+            "nodes"            : copy.deepcopy(health_matrix)
+        }
+    return jsonify(data)
+
+
+@flask_app.route("/node/<node_id>", methods=["GET"])
+def api_node(node_id):
+    """Single node details."""
+    with matrix_lock:
+        node = health_matrix.get(node_id)
+        # Copy inside the lock so jsonify serialises a stable snapshot,
+        # not a live dict that another thread may mutate mid-serialise.
+        node_copy = copy.deepcopy(node) if node else None
+    if node_copy:
+        return jsonify(node_copy)
+    return jsonify({"error": "Node not found"}), 404
+
+
+@flask_app.route("/summary", methods=["GET"])
+def api_summary():
+    """Lightweight summary for quick dashboard polling."""
+    with matrix_lock:
+        summary = {}
+        for nid, d in health_matrix.items():
+            summary[nid] = {
+                "status"      : d.get("status"),
+                "health_score": d.get("health_score"),
+                "rssi"        : d.get("rssi"),
+                "avg_latency" : d.get("avg_latency_ms"),
+                "packet_loss" : d.get("packet_loss"),
+                "last_seen"   : d.get("last_seen_str"),
+            }
+    return jsonify({
+        "node_count": len(summary),
+        "nodes"     : summary,
+        "timestamp" : datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    })
+
+
+@flask_app.route("/topology", methods=["GET"])
+def api_topology():
+    """Returns mesh topology as edges for visualisation."""
+    edges = []
+    with matrix_lock:
+        for nid, d in health_matrix.items():
+            for nb in d.get("neighbours", []):
+                edges.append({"from": nid, "to": nb})
+            for dest, route in d.get("routing_table", {}).items():
+                edges.append({
+                    "from"     : nid,
+                    "to"       : dest,
+                    "via"      : route.get("next_hop"),
+                    "hop_count": route.get("hop_count"),
+                    "latency"  : route.get("avg_latency_ms"),   # key is avg_latency_ms not avg_latency
+                    "cost"     : route.get("cost"),
+                    "protocol" : route.get("best_protocol"),    # pass protocol so topology can colour edges
+                })
+    return jsonify({"edges": edges})
+
+
+@flask_app.route("/ping", methods=["GET"])
+def api_ping():
+    return jsonify({"status": "ok", "gateway": "running"})
+
+
+def run_flask():
+    log.info(f"[Flask] REST API starting on port {FLASK_PORT}")
+    flask_app.run(host="0.0.0.0", port=FLASK_PORT, debug=False, use_reloader=False)
+
+
+# ─────────────────────────────────────────────
+#  BLE GATEWAY SCANNER
+#  Runs on the Raspberry Pi's built-in Bluetooth.
+#  Directly receives BLE beacons from nodes that
+#  have no WiFi – giving them a path to the gateway.
+# ─────────────────────────────────────────────
+
+# Dedup tracker: only process/log a BLE packet when seq number changes
+# { node_id: last_seq }
+_ble_last_seq = {}
+
+def ble_advertisement_callback(device, advertisement_data):
+    """Called by BleakScanner for every BLE advertisement received."""
+    try:
+        manuf = advertisement_data.manufacturer_data
+        if not manuf:
+            return
+        for company_id, payload in manuf.items():
+            full = bytes([company_id & 0xFF, (company_id >> 8) & 0xFF]) + bytes(payload)
+            decoded = decode_ble_payload(full)
+            if decoded is None:
+                decoded = decode_ble_payload(bytes(payload))
+            if decoded is None:
+                continue
+
+            node_id  = decoded["node_id"]
+            pkt_type = decoded["pkt_type"]
+            adv_rssi = advertisement_data.rssi or -99
+            now      = time.time()
+            seq      = decoded["seq"]
+
+            # ── Dedup: skip if same seq as last time we processed this node ──
+            # BLE advertises the same packet ~10x/sec – only act on new seq numbers
+            last_seq = _ble_last_seq.get(node_id)
+            is_new   = (last_seq != seq)
+            if is_new:
+                _ble_last_seq[node_id] = seq
+
+            if pkt_type == BLE_PKT_TYPE_METRIC:
+                # Always update RSSI (it changes even for same seq)
+                # but only fully process and log on new seq
+                if is_new:
+                    pkt = {
+                        "type"        : "METRIC",
+                        "node_id"     : node_id,
+                        "protocol"    : "BLE-Direct",
+                        "timestamp"   : now,
+                        "seq_number"  : seq,
+                        "hop_count"   : 0,
+                        "rssi"        : adv_rssi,
+                        "ip"          : "BLE-only",
+                        "neighbours"  : [],
+                        "routing_table": {},
+                        "metrics": {
+                            "wifi_avg_latency_ms": 0,
+                            "ble_avg_latency_ms" : decoded["lat_ms"],
+                            "wifi_packet_loss"   : 1.0,
+                            "ble_packet_loss"    : decoded["loss"],
+                            "wifi_rssi"          : -99,
+                            "ble_rssi"           : adv_rssi,
+                        }
+                    }
+                    process_metric_packet(pkt, "BLE-direct")
+                    log.info(f"[BLE-GW] Direct metric from {node_id}  "
+                             f"RSSI={adv_rssi}dBm  seq={seq}")
+
+            elif pkt_type == BLE_PKT_TYPE_HELLO and is_new:
+                process_hello_packet({
+                    "type"    : "HELLO",
+                    "node_id" : node_id,
+                    "protocol": "BLE-Direct",
+                    "rssi"    : adv_rssi,
+                    "routing" : {}
+                }, "BLE-direct")
+
+    except Exception as e:
+        log.debug(f"[BLE-GW] Callback error: {e}")
+
+
+async def ble_scan_async():
+    """Async BLE scanner loop – runs forever in its own event loop."""
+    log.info("[BLE-GW] Starting BLE scanner on Raspberry Pi Bluetooth...")
+    try:
+        scanner = BleakScanner(detection_callback=ble_advertisement_callback)
+        await scanner.start()
+        log.info("[BLE-GW] ✅ BLE scanner active – listening for node beacons")
+        while True:
+            await asyncio.sleep(1)
+    except Exception as e:
+        log.error(f"[BLE-GW] Scanner error: {e}")
+        log.error("[BLE-GW] Make sure Bluetooth is enabled: sudo systemctl start bluetooth")
+
+
+def ble_gateway_scanner():
+    """Thread entry point – runs the async BLE scanner in its own event loop."""
+    if not BLE_SCAN_ENABLED:
+        log.warning("[BLE-GW] Skipped – bleak not installed")
+        return
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(ble_scan_async())
+    except Exception as e:
+        log.error(f"[BLE-GW] Fatal: {e}")
+
+
+# ─────────────────────────────────────────────
+#  MAIN
+# ─────────────────────────────────────────────
+def main():
+    print("=" * 60)
+    print("  IoT Mesh Gateway  –  Raspberry Pi 4")
+    print("=" * 60)
+    log.info("Gateway starting...")
+
+    threads = [
+        threading.Thread(target=udp_metric_listener,  daemon=True, name="MetricListener"),
+        threading.Thread(target=udp_mesh_listener,    daemon=True, name="MeshListener"),
+        threading.Thread(target=watchdog_loop,         daemon=True, name="Watchdog"),
+        threading.Thread(target=persist_loop,          daemon=True, name="Persist"),
+        threading.Thread(target=dashboard_loop,        daemon=True, name="Dashboard"),
+        threading.Thread(target=run_flask,             daemon=True, name="Flask"),
+        threading.Thread(target=ble_gateway_scanner,   daemon=True, name="BLE-Scanner"),
+    ]
+
+    for t in threads:
+        t.start()
+        log.info(f"  ✅  Thread started: {t.name}")
+
+    log.info("Gateway fully operational. Press Ctrl+C to stop.")
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        log.info("Gateway shutting down.")
+
+
 if __name__ == "__main__":
-    print("═" * 55)
-    print("  IoT Mesh Network Dashboard Server")
-    print(f"  Dashboard:  http://localhost:{DASHBOARD_PORT}")
-    print(f"  Gateway:    {GATEWAY_URL}")
-    print("═" * 55)
-    uvicorn.run(app, host="0.0.0.0", port=DASHBOARD_PORT, log_level="info")
+    main()
