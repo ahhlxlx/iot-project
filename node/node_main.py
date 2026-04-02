@@ -618,15 +618,19 @@ def send_metrics():
     w_powers = [lnk["power_cost"]  for (_, p), lnk in link_stats.items() if p == "WiFi"]
     b_powers = [lnk["power_cost"]  for (_, p), lnk in link_stats.items() if p == "BLE"]
 
-    avg_w_lat   = sum(w_lats)   / len(w_lats)   if w_lats   else 0.0
+    avg_w_lat = sum(w_lats) / len(w_lats) if w_lats else 0.0
+    if avg_w_lat == 0.0 and wifi_code.wifi_active:
+        wifi_rssi_val = wifi_code.wifi_rssi()
+        if wifi_rssi_val > -99:
+            avg_w_lat = max(5.0, min(200.0, (-wifi_rssi_val - 30) * 1.5))
+
     avg_b_lat   = sum(b_lats)   / len(b_lats)   if b_lats   else 0.0
     if avg_b_lat == 0.0:
-        rssi_val = wifi_code.wifi_rssi()
-        if rssi_val <= -99:  # truly BLE-only, use BLE RSSI
-            ble_rssis = [lnk["rssi"] for (_, p), lnk in link_stats.items() if p == "BLE" and lnk["rssi"] > -99]
-            if ble_rssis:
-                avg_ble_rssi = sum(ble_rssis) / len(ble_rssis)
-                avg_b_lat = max(20.0, min(120.0, (avg_ble_rssi + 40) * -1.375 + 25))
+        ble_rssi_samples = [lnk["rssi"] for (_, p), lnk in link_stats.items()
+                            if p == "BLE" and lnk["rssi"] > -99]
+        if ble_rssi_samples:
+            avg_ble_rssi_est = sum(ble_rssi_samples) / len(ble_rssi_samples)
+            avg_b_lat = max(20.0, min(120.0, (avg_ble_rssi_est + 40) * -1.375 + 25))
     avg_w_loss  = sum(w_losses) / len(w_losses) if w_losses else 0.0
     avg_b_loss  = sum(b_losses) / len(b_losses) if b_losses else 0.0
     avg_b_rssi  = sum(b_rssies) / len(b_rssies) if b_rssies else -99
@@ -635,6 +639,7 @@ def send_metrics():
 
     # Full routing snapshot for the gateway
     rt_snapshot = {}
+    now_rt = time.time()
     for dest, r in routing_table.items():
         rt_snapshot[dest] = {
             "next_hop"      : r["next_hop"],
@@ -649,6 +654,34 @@ def send_metrics():
             "ble_lat"       : r.get("ble_lat"),
         }
 
+    for (node_id, proto), lnk in link_stats.items():
+        if node_id in rt_snapshot:
+            continue
+        if now_rt - lnk["last_seen"] > ROUTE_TIMEOUT:
+            continue
+        lat_est = avg_latency(node_id, proto)
+        if lat_est >= 9999.0:
+            rssi_v = lnk["rssi"]
+            if proto == "BLE" and rssi_v > -99:
+                lat_est = max(20.0, min(120.0, (rssi_v + 40) * -1.375 + 25))
+            elif proto == "WiFi" and rssi_v > -99:
+                lat_est = max(5.0, min(200.0, (-rssi_v - 30) * 1.5))
+            else:
+                lat_est = 88.0 if proto == "BLE" else 50.0
+        cost_est = compute_cost(lat_est, lnk["packet_loss"], lnk["power_cost"])
+        rt_snapshot[node_id] = {
+            "next_hop"      : node_id,
+            "best_protocol" : proto,
+            "hop_count"     : 1,
+            "avg_latency_ms": round(lat_est, 2),
+            "packet_loss"   : lnk["packet_loss"],
+            "cost"          : round(cost_est, 6),
+            "wifi_cost"     : round(cost_est, 6) if proto == "WiFi" else None,
+            "ble_cost"      : round(cost_est, 6) if proto == "BLE"  else None,
+            "wifi_lat"      : round(lat_est, 2)  if proto == "WiFi" else None,
+            "ble_lat"       : round(lat_est, 2)  if proto == "BLE"  else None,
+        }
+
     # ── 1. WiFi metric packet → gateway ────────────────────────────
     wifi_pkt = {
         "type"         : "METRIC",
@@ -659,7 +692,10 @@ def send_metrics():
         "hop_count"    : 0,
         "rssi"         : rssi,
         "ip"           : wifi_code.my_ip,
-        "neighbours"   : list(set(n for (n, _) in link_stats.keys())),
+        "neighbours"   : list(set(
+            n for (n, p), lnk in link_stats.items()
+            if (time.time() - lnk["last_seen"]) < ROUTE_TIMEOUT
+        )),
         "routing_table": rt_snapshot,
         "route_mode"   : route_mode,
         "weights"      : {
@@ -877,22 +913,77 @@ def process_ble_buffer():
                                    and link_stats[wifi_key]["last_seen"] > 0
                                    and (time.time() - link_stats[wifi_key]["last_seen"]) < ROUTE_TIMEOUT)
                 if wifi_code.wifi_active and not sender_has_wifi:
+                    # Estimate latency if not available
+                    relay_lat = lat_ms
+                    if relay_lat == 0.0 and adv_rssi > -99:
+                        relay_lat = max(20.0, min(120.0, (adv_rssi + 40) * -1.375 + 25))
+
+                    # Build what we know about the relayed node's peers
+                    # We are a known neighbour of the relayed node since we can hear it
+                    relay_neighbours = [NODE_ID]
+                    relay_rt = {
+                        NODE_ID: {
+                            "next_hop"      : NODE_ID,
+                            "best_protocol" : "BLE",
+                            "hop_count"     : 1,
+                            "avg_latency_ms": round(relay_lat, 2),
+                            "packet_loss"   : loss,
+                            "cost"          : round(compute_cost(relay_lat, loss,
+                                                min(1.0, max(0.05, (-adv_rssi - 50) / 40.0))), 6),
+                            "wifi_cost"     : None,
+                            "ble_cost"      : round(compute_cost(relay_lat, loss,
+                                                min(1.0, max(0.05, (-adv_rssi - 50) / 40.0))), 6),
+                            "wifi_lat"      : None,
+                            "ble_lat"       : round(relay_lat, 2),
+                        }
+                    }
+
+                    # Also include any other peers we know the relayed node has
+                    # (if they appear in our own link_stats as BLE neighbours)
+                    for (peer_id, peer_proto), peer_lnk in link_stats.items():
+                        if peer_id == node_id or peer_id == NODE_ID:
+                            continue
+                        if now - peer_lnk["last_seen"] > ROUTE_TIMEOUT:
+                            continue
+                        peer_lat = avg_latency(peer_id, peer_proto)
+                        if peer_lat >= 9999.0 and peer_lnk["rssi"] > -99:
+                            peer_rssi = peer_lnk["rssi"]
+                            peer_lat = (max(20.0, min(120.0, (peer_rssi + 40) * -1.375 + 25))
+                                        if peer_proto == "BLE"
+                                        else max(5.0, min(200.0, (-peer_rssi - 30) * 1.5)))
+                        relay_neighbours.append(peer_id)
+                        relay_rt[peer_id] = {
+                            "next_hop"      : peer_id,
+                            "best_protocol" : peer_proto,
+                            "hop_count"     : 1,
+                            "avg_latency_ms": round(peer_lat, 2),
+                            "packet_loss"   : peer_lnk["packet_loss"],
+                            "cost"          : round(compute_cost(peer_lat, peer_lnk["packet_loss"],
+                                                                peer_lnk["power_cost"]), 6),
+                            "wifi_cost"     : round(compute_cost(peer_lat, peer_lnk["packet_loss"],
+                                                    peer_lnk["power_cost"]), 6) if peer_proto == "WiFi" else None,
+                            "ble_cost"      : round(compute_cost(peer_lat, peer_lnk["packet_loss"],
+                                                    peer_lnk["power_cost"]), 6) if peer_proto == "BLE"  else None,
+                            "wifi_lat"      : round(peer_lat, 2) if peer_proto == "WiFi" else None,
+                            "ble_lat"       : round(peer_lat, 2) if peer_proto == "BLE"  else None,
+                        }
+
                     relay_pkt = {
                         "type"         : "METRIC",
-                        "node_id"      : node_id,        # original sender's ID
-                        "protocol"     : "BLE",           # flag as BLE-sourced
+                        "node_id"      : node_id,
+                        "protocol"     : "BLE",
                         "timestamp"    : now,
                         "seq_number"   : decoded.get("seq_hop", 0),
                         "hop_count"    : 1,
-                        "rssi"         : adv_rssi,        # BLE RSSI we measured
+                        "rssi"         : adv_rssi,
                         "ip"           : "BLE-only",
-                        "relayed_by"   : NODE_ID,         # us
-                        "neighbours"   : [NODE_ID],
-                        "routing_table": {},
+                        "relayed_by"   : NODE_ID,
+                        "neighbours"   : list(set(relay_neighbours)),
+                        "routing_table": relay_rt,
                         "metrics": {
                             "wifi_avg_latency_ms": 0,
-                            "ble_avg_latency_ms" : lat_ms,
-                            "wifi_packet_loss"   : 1.0,   # no WiFi = 100% WiFi loss
+                            "ble_avg_latency_ms" : relay_lat,
+                            "wifi_packet_loss"   : 1.0,
                             "ble_packet_loss"    : loss,
                             "wifi_rssi"          : -99,
                             "ble_rssi"           : adv_rssi,

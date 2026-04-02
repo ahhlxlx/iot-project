@@ -679,6 +679,12 @@ function tracePath(src, dst, nodes, weights) {
         hops.push(analyzeHop(current, dst, fn, null, weights));
         break;
       }
+      const neighbours = fn.neighbours || [];
+      if (neighbours.includes(dst)) {
+          // Direct peer-to-peer BLE link!
+          hops.push(analyzeHop(current, dst, fn, null, weights));
+          break;
+      }
       // Fallback: route via GATEWAY (covers BLE↔BLE, BLE↔WiFi, no-route pairs)
       const dstNode = nodes[dst];
       if (dstNode && !visited.has('GATEWAY')) {

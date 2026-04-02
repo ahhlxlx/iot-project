@@ -1059,28 +1059,28 @@ function buildPathEntries(data) {
 
   // ① Each node → GATEWAY
   ids.forEach(srcId => {
-    const n = nodes[srcId];
-    if (!n) return;
-    const hops = traceHopChain(srcId, 'GATEWAY', nodes);
-    if (!hops.length) {
-      // Direct link – show as single hop
-      hops.push({
-        from: srcId, to: 'GATEWAY',
-        protocol: n.protocol || 'WiFi',
-        latency: n.avg_latency_ms || 0,
-        rssi: n.rssi ?? -99
-      });
-    }
-    const totalLat = hops.reduce((s, h) => s + (h.latency || 0), 0);
-    const protocols = [...new Set(hops.map(h => h.protocol || ''))];
-    const isBridge = protocols.some(p => p.includes('BLE')) && protocols.some(p => !p.includes('BLE'));
-    paths.push({
-      label: `${srcId} → GATEWAY`,
-      src: srcId, dst: 'GATEWAY',
-      hops, totalLat, isBridge,
-      hopCount: hops.length,
+    const srcNode = nodes[srcId];
+    const neighbours = srcNode.neighbours || [];
+    neighbours.forEach(dstId => {
+        if (!nodes[dstId]) return;
+        // Direct peer link exists - show it
+        paths.push({
+            label: `${srcId} ↔ ${dstId}`,
+            src: srcId, dst: dstId,
+            hops: [{
+                from: srcId,
+                to: dstId,
+                protocol: srcNode.protocol || 'BLE',
+                latency: srcNode.metrics?.ble_avg_latency_ms || 0,
+                rssi: srcNode.metrics?.ble_rssi || srcNode.rssi || -99
+            }],
+            totalLat: srcNode.metrics?.ble_avg_latency_ms || 0,
+            isBridge: false,
+            hopCount: 1,
+            isPeerToPeer: true
+        });
     });
-  });
+});
 
   // ② Cross-node pairs that require a protocol bridge
   for (let i = 0; i < ids.length; i++) {
