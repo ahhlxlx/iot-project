@@ -163,10 +163,8 @@ def find_manuf_data_gw(adv_data_bytes):
 seq_tracker = {}   # { node_id: { last_seq, expected_seq } }
 
 def sign_packet(pkt_dict):
-    """Add HMAC-SHA256 signature to outgoing packet.
-    Uses sort_keys=True to match server.py and node_main.py's _sorted_json()."""
-    pkt_dict.pop("sig", None)
-    payload = json.dumps(pkt_dict, sort_keys=True, separators=(',', ':')).encode()
+    """Add HMAC-SHA256 signature to outgoing packet."""
+    payload = json.dumps(pkt_dict).encode()
     sig = hmac.new(SHARED_KEY, payload, hashlib.sha256).hexdigest()
     pkt_dict["sig"] = sig
     return pkt_dict
@@ -254,6 +252,10 @@ def process_metric_packet(pkt, sender_ip):
     loss      = metrics.get("wifi_packet_loss",    metrics.get("ble_packet_loss",    0.0))
     throughput= metrics.get("throughput_est", 0.0)
 
+    # Pull route preference fields if the node included them (sent in every METRIC)
+    route_mode = pkt.get("route_mode", None)
+    weights    = pkt.get("weights",    None)
+
     with matrix_lock:
         existing = health_matrix.get(node_id, {})
 
@@ -288,26 +290,11 @@ def process_metric_packet(pkt, sender_ip):
         if len(lat_hist)  > 20: lat_hist.pop(0)
         if len(rssi_hist) > 20: rssi_hist.pop(0)
 
-        # ── Preserve WiFi sender_ip — never overwrite a real IP with a BLE placeholder ──
-        # NODE_gw (dual-protocol) sends WiFi metrics AND BLE beacons.
-        # The BLE scanner fires ~every 10 s with sender_ip="BLE-direct", which would
-        # constantly clobber the valid WiFi IP.  Rule: a real IP always wins.
-        BLE_PLACEHOLDERS = ("BLE-direct", "BLE-only", "")
-        existing_ip = existing.get("sender_ip", "")
-        existing_wifi_ip = existing.get("wifi_sender_ip", "")
-        if existing_ip not in BLE_PLACEHOLDERS and sender_ip in BLE_PLACEHOLDERS:
-            sender_ip = existing_ip          # keep the real IP
-        # Also carry forward wifi_sender_ip if we have one and new packet is BLE
-        wifi_sender_ip = existing_wifi_ip
-        if sender_ip not in BLE_PLACEHOLDERS:
-            wifi_sender_ip = sender_ip       # update to latest real IP
-
         # ── Build updated node entry ────────────────────────────────
         node_data = {
             "node_id"         : node_id,
             "protocol"        : protocol,
             "sender_ip"       : sender_ip,
-            "wifi_sender_ip"  : wifi_sender_ip,   # always a real IP if ever seen over WiFi
             "last_seen"       : now,
             "last_seen_str"   : now_str,
             "rssi"            : rssi,
@@ -326,6 +313,10 @@ def process_metric_packet(pkt, sender_ip):
             # Store full per-protocol metrics so server.py and frontend can
             # access wifi_rssi, ble_rssi, wifi_packet_loss, ble_packet_loss etc.
             "metrics"         : metrics,
+            # Route preference — updated from METRIC packets and ROUTE_PREF_ACK
+            "route_mode"      : route_mode or existing.get("route_mode", "balanced"),
+            "route_weights"   : weights    or existing.get("route_weights", {}),
+            "route_ack_time"  : existing.get("route_ack_time"),   # last time node ACK'd a pref change
         }
 
         score, status, alerts = compute_health_score(node_data)
@@ -381,14 +372,35 @@ def process_hello_packet(pkt, sender_ip):
             health_matrix[node_id]["routing_table"] = rt
             # Keep protocol and sender_ip current in case node switched WiFi↔BLE
             health_matrix[node_id]["protocol"]      = pkt.get("protocol", health_matrix[node_id].get("protocol", "WiFi"))
-            # Preserve WiFi IP — only update sender_ip if the new value is a real IP
-            # or we don't have a real IP yet
-            BLE_PLACEHOLDERS = ("BLE-direct", "BLE-only", "")
-            existing_ip = health_matrix[node_id].get("sender_ip", "")
-            if existing_ip in BLE_PLACEHOLDERS or sender_ip not in BLE_PLACEHOLDERS:
-                health_matrix[node_id]["sender_ip"] = sender_ip
-            if sender_ip not in BLE_PLACEHOLDERS:
-                health_matrix[node_id]["wifi_sender_ip"] = sender_ip
+            health_matrix[node_id]["sender_ip"]     = sender_ip
+
+
+# ─────────────────────────────────────────────
+#  PROCESS ROUTE_PREF_ACK  (node confirmed weight update)
+# ─────────────────────────────────────────────
+def process_route_pref_ack(pkt, sender_ip):
+    """
+    Node sends ROUTE_PREF_ACK after applying new routing weights.
+    Store the confirmed mode + weights so the dashboard can show live status.
+    """
+    node_id = pkt.get("node_id")
+    if not node_id:
+        return
+    mode    = pkt.get("mode", "balanced")
+    weights = {
+        "w_latency"     : pkt.get("w_latency"),
+        "w_packet_loss" : pkt.get("w_packet_loss"),
+        "w_power"       : pkt.get("w_power"),
+    }
+    now = time.time()
+    with matrix_lock:
+        if node_id in health_matrix:
+            health_matrix[node_id]["route_mode"]     = mode
+            health_matrix[node_id]["route_weights"]  = weights
+            health_matrix[node_id]["route_ack_time"] = now
+            health_matrix[node_id]["sender_ip"]      = sender_ip   # refresh IP from ACK
+    log.info(f"[RoutePref] ACK from {node_id}: mode={mode} "
+             f"L={weights['w_latency']} P={weights['w_packet_loss']} W={weights['w_power']}")
 
 
 # ─────────────────────────────────────────────
@@ -549,8 +561,11 @@ def udp_mesh_listener():
 
             pkt = json.loads(raw.decode('utf-8'))
             pkt.pop("sig", None)
-            if pkt.get("type") == "HELLO":
+            ptype = pkt.get("type")
+            if ptype == "HELLO":
                 process_hello_packet(pkt, sender_ip)
+            elif ptype == "ROUTE_PREF_ACK":
+                process_route_pref_ack(pkt, sender_ip)
         except Exception as e:
             log.error(f"[UDP] Mesh listener error: {e}")
 
