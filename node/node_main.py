@@ -896,13 +896,70 @@ def process_ble_buffer():
         # Proxied HELLO (seq_hop=1) = WiFi-only node advertised by
         # a dual-protocol relay. NOT a direct BLE link — skip
         # direct link recording to avoid false routes.
-        if pkt_type == BLE_PKT_TYPE_HELLO and seq_hop == 1:
-            print(f"[BLE]  Proxied Hello from {node_id} "
-                  f"(relayed, not direct)  RSSI={adv_rssi}dBm")
-            rebuild_routing_table()
-            # Skip to next packet — do not record as direct BLE link
-            continue
+        if seq_hop == 1:
+            # Proxied/relayed packet — node_id is NOT directly reachable
+            # Find the best direct BLE neighbour as the relay
+            relay_node      = None
+            best_relay_cost = 9999.0
+            for (n, p), l in link_stats.items():
+                if p != "BLE":
+                    continue
+                if now - l["last_seen"] > ROUTE_TIMEOUT:
+                    continue
+                n_lat = avg_latency(n, "BLE")
+                if n_lat >= 9999.0:
+                    r = l["rssi"]
+                    n_lat = max(20.0, min(120.0,
+                                (r + 40) * -1.375 + 25)) if r > -99 else 9999.0
+                if n_lat >= 9999.0:
+                    continue
+                rc = compute_cost(n_lat, l["packet_loss"], l["power_cost"])
+                if rc < best_relay_cost:
+                    best_relay_cost = rc
+                    relay_node      = n
 
+            if relay_node:
+                # hop1 = our BLE link to relay
+                hop1_lnk = get_link(relay_node, "BLE")
+                hop1_lat = avg_latency(relay_node, "BLE")
+                if hop1_lat >= 9999.0:
+                    r = hop1_lnk["rssi"]
+                    hop1_lat = max(20.0, min(120.0,
+                                  (r + 40) * -1.375 + 25)) if r > -99 else 50.0
+
+                # hop2 = relay to node_id (from advert lat_ms)
+                hop2_lat   = lat_ms if lat_ms > 0 else 50.0
+                total_lat  = hop1_lat + hop2_lat
+                total_loss = max(loss, hop1_lnk["packet_loss"])
+                total_pow  = hop1_lnk["power_cost"]
+                total_cost = compute_cost(total_lat, total_loss, total_pow)
+
+                existing = routing_table.get(node_id)
+                if existing is None or total_cost < existing.get("cost", 9999):
+                    routing_table[node_id] = {
+                        "next_hop"      : relay_node,
+                        "best_protocol" : "BLE",
+                        "hop_count"     : 2,
+                        "avg_latency_ms": round(total_lat,  2),
+                        "packet_loss"   : round(total_loss, 4),
+                        "power_cost"    : round(total_pow,  4),
+                        "cost"          : round(total_cost, 6),
+                        "wifi_cost"     : None,
+                        "ble_cost"      : round(total_cost, 6),
+                        "wifi_lat"      : None,
+                        "ble_lat"       : round(total_lat,  2),
+                        "last_seen"     : now,
+                    }
+                    print(f"[BLE]  Indirect route: {node_id} via "
+                          f"{relay_node} 2-hop "
+                          f"lat={total_lat:.1f}ms "
+                          f"cost={total_cost:.4f}")
+            else:
+                print(f"[BLE]  Proxied {node_id} but no relay found yet")
+
+            rebuild_routing_table()
+            continue
+        
         lnk = get_link(node_id, "BLE")
         lnk["rssi"]       = adv_rssi
         lnk["last_seen"]  = now
