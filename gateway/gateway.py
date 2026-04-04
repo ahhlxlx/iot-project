@@ -64,6 +64,7 @@ PACKET_LOSS_CRIT    = 0.20          # 20%
 RSSI_WARN_DBM       = -75
 RSSI_CRIT_DBM       = -85
 NODE_TIMEOUT_SEC    = 60            # Mark node OFFLINE if no packet for this long
+NODE_TIMEOUT_SEC_BLE = 120
 
 # ─────────────────────────────────────────────
 #  LOGGING
@@ -413,7 +414,12 @@ def watchdog_loop():
         with matrix_lock:
             for node_id, data in health_matrix.items():
                 age = now - data.get("last_seen", now)
-                if age > NODE_TIMEOUT_SEC and data.get("status") != "OFFLINE":
+                proto    = data.get("protocol", "WiFi")
+                is_ble   = ("BLE" in proto and
+                            data.get("sender_ip") in
+                            ("BLE-direct", "BLE-only", ""))
+                timeout  = NODE_TIMEOUT_SEC_BLE if is_ble else NODE_TIMEOUT_SEC
+                if age > timeout and data.get("status") != "OFFLINE":
                     health_matrix[node_id]["status"]       = "OFFLINE"
                     health_matrix[node_id]["health_score"] = 0
                     health_matrix[node_id]["alerts"]       = [f"Node silent for {int(age)}s"]
@@ -713,82 +719,105 @@ def ble_advertisement_callback(device, advertisement_data):
             return
         for company_id, payload in manuf.items():
             full = bytes([company_id & 0xFF, (company_id >> 8) & 0xFF]) + bytes(payload)
+            if len(full) >= 2 and full[0:2] == bytes([0xAA, 0xBB]):
+                log.debug(f"[BLE-GW] Mesh-magic packet from {device.address} "
+                         f"len={len(full)} company_id=0x{company_id:04X}")
             decoded = decode_ble_payload(full)
             if decoded is None:
                 decoded = decode_ble_payload(bytes(payload))
             if decoded is None:
                 continue
-            
-            lat_ms = decoded["lat_ms"]
-            if lat_ms == 0.0 and adv_rssi > -99:
-                lat_ms = rssi_to_ble_latency(adv_rssi)
-            
+
             node_id  = decoded["node_id"]
             pkt_type = decoded["pkt_type"]
             adv_rssi = advertisement_data.rssi or -99
             now      = time.time()
             seq      = decoded["seq"]
+            lat_ms   = decoded["lat_ms"]
 
-            # ── Dedup: skip if same seq as last time we processed this node ──
-            # BLE advertises the same packet ~10x/sec – only act on new seq numbers
+            # Estimate latency from RSSI if node sent 0
+            if lat_ms == 0.0 and adv_rssi > -99:
+                lat_ms = max(20.0, min(120.0, (adv_rssi + 40) * -1.375 + 25))
+
+            # Dedup: only fully process new seq numbers
             last_seq = _ble_last_seq.get(node_id)
-            is_new   = (last_seq != seq)
+            is_new   = (last_seq is None or last_seq != seq)
             if is_new:
                 _ble_last_seq[node_id] = seq
 
-            if pkt_type == BLE_PKT_TYPE_METRIC:
-                # Always update RSSI (it changes even for same seq)
-                # but only fully process and log on new seq
-                if is_new:
-                    pkt = {
-                        "type"        : "METRIC",
-                        "node_id"     : node_id,
-                        "protocol"    : "BLE-Direct",
-                        "timestamp"   : now,
-                        "seq_number"  : seq,
-                        "hop_count"   : 0,
-                        "rssi"        : adv_rssi,
-                        "ip"          : "BLE-only",
-                        "neighbours"  : [],
-                        "routing_table": {},
-                        "metrics": {
-                            "wifi_avg_latency_ms": 0,
-                            "ble_avg_latency_ms" : lat_ms,
-                            "wifi_packet_loss"   : 1.0,
-                            "ble_packet_loss"    : decoded["loss"],
-                            "wifi_rssi"          : -99,
-                            "ble_rssi"           : adv_rssi,
-                        }
-                    }
-                    process_metric_packet(pkt, "BLE-direct")
-                    log.info(f"[BLE-GW] Direct metric from {node_id}  "
-                             f"RSSI={adv_rssi}dBm  seq={seq}")
+            # ALWAYS update last_seen and rssi even for duplicate seq
+            # This prevents watchdog timeout between seq changes
+            with matrix_lock:
+                if node_id in health_matrix:
+                    health_matrix[node_id]["last_seen"] = now
+                    health_matrix[node_id]["last_seen_str"] = \
+                        datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S")
+                    health_matrix[node_id]["rssi"] = adv_rssi
+                    if health_matrix[node_id].get("status") == "OFFLINE":
+                        # Node came back online
+                        health_matrix[node_id]["status"] = "ONLINE"
+                        health_matrix[node_id]["health_score"] = 100.0
+                        health_matrix[node_id]["alerts"] = []
+                        log.info(f"[BLE-GW] {node_id} back ONLINE")
+
+            if pkt_type == BLE_PKT_TYPE_METRIC and is_new:
+                pkt = {
+                    "type"         : "METRIC",
+                    "node_id"      : node_id,
+                    "protocol"     : "BLE-Direct",
+                    "timestamp"    : now,
+                    "seq_number"   : seq,
+                    "hop_count"    : 0,
+                    "rssi"         : adv_rssi,
+                    "ip"           : "BLE-only",
+                    "neighbours"   : [],
+                    "routing_table": {},
+                    "metrics": {
+                        "wifi_avg_latency_ms": 0,
+                        "ble_avg_latency_ms" : lat_ms,
+                        "wifi_packet_loss"   : 1.0,
+                        "ble_packet_loss"    : decoded["loss"],
+                        "wifi_rssi"          : -99,
+                        "ble_rssi"           : adv_rssi,
+                        "wifi_power_cost"    : 1.0,
+                        "ble_power_cost"     : min(1.0, max(0.05,
+                                                  (-adv_rssi - 50) / 40.0)),
+                    },
+                }
+                process_metric_packet(pkt, "BLE-direct")
+                log.info(f"[BLE-GW] Direct metric from {node_id}  "
+                         f"RSSI={adv_rssi}dBm  lat={lat_ms:.1f}ms  seq={seq}")
 
             elif pkt_type == BLE_PKT_TYPE_HELLO and is_new:
+                # Use process_hello_packet to create entry if not exists
                 process_hello_packet({
                     "type"    : "HELLO",
                     "node_id" : node_id,
                     "protocol": "BLE-Direct",
                     "rssi"    : adv_rssi,
-                    "routing" : {}
+                    "routing" : {},
                 }, "BLE-direct")
+                log.debug(f"[BLE-GW] Hello from {node_id}  "
+                          f"RSSI={adv_rssi}dBm  seq={seq}")
 
     except Exception as e:
         log.debug(f"[BLE-GW] Callback error: {e}")
 
 
 async def ble_scan_async():
-    """Async BLE scanner loop – runs forever in its own event loop."""
+    """Async BLE scanner loop – runs forever, auto-restarts on error."""
     log.info("[BLE-GW] Starting BLE scanner on Raspberry Pi Bluetooth...")
-    try:
-        scanner = BleakScanner(detection_callback=ble_advertisement_callback)
-        await scanner.start()
-        log.info("[BLE-GW] ✅ BLE scanner active – listening for node beacons")
-        while True:
-            await asyncio.sleep(1)
-    except Exception as e:
-        log.error(f"[BLE-GW] Scanner error: {e}")
-        log.error("[BLE-GW] Make sure Bluetooth is enabled: sudo systemctl start bluetooth")
+    while True:
+        try:
+            scanner = BleakScanner(detection_callback=ble_advertisement_callback)
+            await scanner.start()
+            log.info("[BLE-GW] ✅ BLE scanner active – listening for node beacons")
+            while True:
+                await asyncio.sleep(1)
+        except Exception as e:
+            log.error(f"[BLE-GW] Scanner error: {e}")
+            log.error("[BLE-GW] Restarting BLE scanner in 5 seconds...")
+            await asyncio.sleep(5)
 
 
 def ble_gateway_scanner():

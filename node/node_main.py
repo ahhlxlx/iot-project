@@ -532,7 +532,6 @@ def broadcast_hello():
     print(f"[Hello] WiFi+BLE broadcast  |  known neighbours: {neighbours}")
 
     # ── Proxy-advertise WiFi-only neighbours over BLE ───────────────
-    # Only dual-protocol nodes do this.
     if wifi_code.wifi_active and ble_code.ble_active:
         now_proxy = time.time()
         proxied   = []
@@ -548,8 +547,10 @@ def broadcast_hello():
             lat        = avg_latency(node_id, "WiFi")
             loss       = lnk["packet_loss"]
             rssi_proxy = lnk["rssi"]
+            # Use seq_hop=1 to signal this is a 1-hop relay
+            # (not a direct link from the proxied node)
             ble_code.ble_advertise_proxy(
-                node_id, BLE_PKT_TYPE_HELLO, 0,
+                node_id, BLE_PKT_TYPE_HELLO, 1,
                 now_proxy, rssi_proxy, lat, loss)
             proxied.append(node_id)
         if proxied:
@@ -889,7 +890,18 @@ def process_ble_buffer():
         adv_rssi = decoded.get("adv_rssi", -99)
         lat_ms   = decoded.get("lat_ms", 0.0)
         loss     = decoded.get("loss", 0.0)
+        seq_hop  = decoded.get("seq_hop", 0)
         now      = time.time()
+
+        # Proxied HELLO (seq_hop=1) = WiFi-only node advertised by
+        # a dual-protocol relay. NOT a direct BLE link — skip
+        # direct link recording to avoid false routes.
+        if pkt_type == BLE_PKT_TYPE_HELLO and seq_hop == 1:
+            print(f"[BLE]  Proxied Hello from {node_id} "
+                  f"(relayed, not direct)  RSSI={adv_rssi}dBm")
+            rebuild_routing_table()
+            # Skip to next packet — do not record as direct BLE link
+            continue
 
         lnk = get_link(node_id, "BLE")
         lnk["rssi"]       = adv_rssi
@@ -946,6 +958,10 @@ def process_ble_buffer():
                         if peer_id == node_id or peer_id == NODE_ID:
                             continue
                         if now - peer_lnk["last_seen"] > ROUTE_TIMEOUT:
+                            continue
+                        # Only include BLE peers for BLE-only relayed nodes
+                        # A BLE-only node cannot directly reach WiFi-only nodes
+                        if peer_proto != "BLE":
                             continue
                         peer_lat = avg_latency(peer_id, peer_proto)
                         if peer_lat >= 9999.0 and peer_lnk["rssi"] > -99:
