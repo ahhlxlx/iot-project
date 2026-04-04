@@ -38,7 +38,7 @@ import wifi_code
 from ble_code import (
     BLE_PKT_TYPE_HELLO, BLE_PKT_TYPE_METRIC,
     BLE_PKT_TYPE_PING,  BLE_PKT_TYPE_PONG,
-    BLE_PKT_TYPE_ROUTE_PREF,
+    BLE_PKT_TYPE_ROUTE_PREF, BLE_PKT_TYPE_PROXY,
 )
 
 # ══════════════════════════════════════════════
@@ -46,7 +46,7 @@ from ble_code import (
 # ══════════════════════════════════════════════
 
 NODE_ID       = "NODE_lx"             # Change to NODE_02, NODE_03 … for each Pico W
-GATEWAY_IP    = "10.202.64.43"        # Raspberry Pi IP
+GATEWAY_IP    = "10.202.64.140"        # Raspberry Pi IP
 WIFI_SSID     = "OnePlus13Equals14"   # Shared WiFi network name
 WIFI_PASSWORD = "gkpm5847"            # Shared WiFi password
 
@@ -110,6 +110,11 @@ link_stats = {}
 routing_table = {}
 
 seq_number  = 0
+
+# Nodes seen only via BLE proxy advertisements (relayed by a dual-protocol
+# neighbour). These are NOT direct BLE neighbours; their next_hop must be
+# the relay node, not the node itself.
+_proxied_ble_nodes = set()
 
 # Pending PING timestamps: { (node_id, protocol): sent_time_ticks_ms }
 ping_pending = {}
@@ -284,6 +289,8 @@ def rebuild_routing_table():
     seen_nodes = set(n for (n, _) in link_stats.keys())
 
     for node_id in seen_nodes:
+        if node_id in _proxied_ble_nodes:
+            continue   # indirect route maintained by process_ble_buffer proxy handler
         wifi_lnk = get_link(node_id, "WiFi")
         ble_lnk  = get_link(node_id, "BLE")
 
@@ -441,6 +448,7 @@ def prune_stale_routes():
         print(f"[Route] Pruned stale link {k[0]} / {k[1]}")
     for k in stale_routes:
         del routing_table[k]
+        _proxied_ble_nodes.discard(k)   # un-track proxy status so it can be re-learned
         print(f"[Route] Pruned stale route → {k}")
 
 
@@ -885,6 +893,31 @@ def process_wifi_packets():
 #  PROCESS BLE RECEIVE BUFFER
 # ══════════════════════════════════════════════
 
+def _find_best_direct_ble_relay(exclude_node_id):
+    """
+    Return the freshest, strongest direct BLE neighbour to use as the relay
+    node for a proxied advertisement.  Excludes the proxied node itself and
+    any other nodes that are themselves only known via proxy.
+    Returns None if no suitable relay is found.
+    """
+    now = time.time()
+    best_nid  = None
+    best_rssi = -999
+    for (nid, proto), lnk in link_stats.items():
+        if proto != "BLE":
+            continue
+        if nid == exclude_node_id:
+            continue
+        if nid in _proxied_ble_nodes:
+            continue   # don't chain proxies
+        if now - lnk["last_seen"] > ROUTE_TIMEOUT:
+            continue
+        if lnk["rssi"] > best_rssi:
+            best_rssi = lnk["rssi"]
+            best_nid  = nid
+    return best_nid
+
+
 def process_ble_buffer():
     """
     Drain ble_code.ble_rx_buffer (filled by the hardware IRQ) and
@@ -940,6 +973,40 @@ def process_ble_buffer():
                 sign_packet(ack)
                 wifi_code.udp_send(GATEWAY_IP, UDP_MESH_PORT, ack)
                 print(f"[RoutePref] ACK sent to gateway via WiFi")
+            continue
+
+        # ── PROXY: a dual-protocol neighbour is relaying a WiFi-only node ──
+        # Do NOT create a direct BLE link to node_id.  Instead build an
+        # indirect route whose next_hop is the actual relay neighbour.
+        if pkt_type == BLE_PKT_TYPE_PROXY:
+            _proxied_ble_nodes.add(node_id)
+            relay = _find_best_direct_ble_relay(node_id)
+            if relay:
+                relay_lnk  = get_link(relay, "BLE")
+                relay_lat  = avg_latency(relay, "BLE")
+                proxy_lat  = lat_ms if lat_ms > 0 else 50.0  # fallback estimate
+                total_lat  = relay_lat + proxy_lat
+                total_cost = compute_cost(total_lat,
+                                          relay_lnk["packet_loss"],
+                                          relay_lnk["power_cost"])
+                existing = routing_table.get(node_id)
+                if existing is None or total_cost < existing.get("cost", 9999):
+                    routing_table[node_id] = {
+                        "next_hop"      : relay,          # ← the real first hop
+                        "best_protocol" : "BLE",
+                        "hop_count"     : 2,
+                        "avg_latency_ms": round(total_lat,  2),
+                        "packet_loss"   : round(relay_lnk["packet_loss"], 4),
+                        "power_cost"    : round(relay_lnk["power_cost"],  4),
+                        "cost"          : round(total_cost, 6),
+                        "wifi_cost"     : None,
+                        "ble_cost"      : round(total_cost, 6),
+                        "wifi_lat"      : None,
+                        "ble_lat"       : round(total_lat,  2),
+                        "last_seen"     : now,
+                    }
+                    print(f"[Route] Proxy: {node_id} via {relay}  "
+                          f"hops=2  cost={total_cost:.4f}")
             continue
 
         # ── All other packet types: update BLE link stats first ────────────
