@@ -346,13 +346,6 @@ function protoLabel(p) {
   return p;
 }
 
-function computeCost(latency_ms, packet_loss, power_cost, w) {
-  return w.w_latency * (latency_ms / 100.0) + w.w_packet_loss * packet_loss + w.w_power * power_cost;
-}
-function rssiToPowerCost(rssi) {
-  return Math.min(1.0, Math.max(0.05, (-rssi - 50) / 40.0));
-}
-
 // Map path analysis mode names → gateway.py WEIGHT_PROFILES mode names
 const MODE_TO_GATEWAY = { speed: 'latency', reliability: 'cost', power: 'power', balanced: 'balanced' };
 
@@ -554,105 +547,53 @@ function setsEqual(a, b) { if (a.size !== b.size) return false; for (var i of a)
 // ══════════════════════════════════════════════
 // CORE: Recalculate WiFi vs BLE cost at each hop
 // ══════════════════════════════════════════════
-function recalcHop(from, to, fromNode, routeEntry, weights) {
-  var m = fromNode.metrics || {};
-  var wLat = routeEntry.wifi_lat || m.wifi_avg_latency_ms || 0;
-  var wLoss = m.wifi_packet_loss != null ? m.wifi_packet_loss : (routeEntry.packet_loss != null ? routeEntry.packet_loss : 0);
-  var isNodeBle = fromNode.protocol && fromNode.protocol.includes('BLE');
-  var wRssi = (m.wifi_rssi != null) ? m.wifi_rssi : (isNodeBle ? -99 : (fromNode.rssi || -99));
-  var wPow = m.wifi_power_cost || rssiToPowerCost(wRssi);
-  var bLat = routeEntry.ble_lat || m.ble_avg_latency_ms || 0;
-  var bLoss = m.ble_packet_loss != null ? m.ble_packet_loss : 0;
-  var bRssi = (m.ble_rssi != null) ? m.ble_rssi : (isNodeBle ? (fromNode.rssi || -99) : -99);
-  var bPow = m.ble_power_cost || rssiToPowerCost(bRssi);
-  var wA = wRssi > -99 || wLat > 0, bA = bRssi > -99 || bLat > 0;
-  var wC = wA ? computeCost(wLat, wLoss, wPow, weights) : 9999;
-  var bC = bA ? computeCost(bLat, bLoss, bPow, weights) : 9999;
-  var isWifi = wC <= bC;
-  var nodeDecided = routeEntry.best_protocol || '?';
-  return {
-    from: from, to: to, protocol: isWifi ? 'WiFi' : 'BLE', node_decided: nodeDecided,
-    changed: (isWifi ? 'WiFi' : 'BLE') !== nodeDecided,
-    cost: isWifi ? wC : bC, wifi_cost: wA ? wC : null, ble_cost: bA ? bC : null,
-    latency: isWifi ? wLat : bLat, wifi_latency: wLat, ble_latency: bLat,
-    power_cost: isWifi ? wPow : bPow, rssi: isWifi ? wRssi : bRssi,
-    packet_loss: isWifi ? wLoss : bLoss,
-  };
-}
+// In-flight guard so rapid triggers (WS updates, mode switches) don't stack requests
+var _analyzeInFlight = false;
+var _analyzePending  = false;
 
-function buildEndpointHop(from, to, nodeData, weights) {
-  var m = nodeData.metrics || {};
-  var wLat = m.wifi_avg_latency_ms || nodeData.avg_latency_ms || 0;
-  var wLoss = m.wifi_packet_loss != null ? m.wifi_packet_loss : (nodeData.packet_loss != null ? nodeData.packet_loss : 0);
-  var isEndpointBle = nodeData.protocol && nodeData.protocol.includes('BLE');
-  var wRssi = (m.wifi_rssi != null) ? m.wifi_rssi : (isEndpointBle ? -99 : (nodeData.rssi || -99));
-  var wPow = m.wifi_power_cost || rssiToPowerCost(wRssi);
-  var bLat = m.ble_avg_latency_ms || 0;
-  var bLoss = m.ble_packet_loss != null ? m.ble_packet_loss : 0;
-  var bRssi = (m.ble_rssi != null) ? m.ble_rssi : (isEndpointBle ? (nodeData.rssi || -99) : -99);
-  var bPow = m.ble_power_cost || rssiToPowerCost(bRssi);
-  var wA = wRssi > -99 || wLat > 0, bA = bRssi > -99 || bLat > 0;
-  var wC = wA ? computeCost(wLat, wLoss, wPow, weights) : 9999;
-  var bC = bA ? computeCost(bLat, bLoss, bPow, weights) : 9999;
-  var isWifi = wC <= bC;
-  var rt = nodeData.routing_table || {};
-  var rtEntry = rt[to];
-  var nd = rtEntry ? (rtEntry.best_protocol || '?') : (isEndpointBle ? 'BLE' : 'WiFi');
-  return {
-    from: from, to: to, protocol: isWifi ? 'WiFi' : 'BLE', node_decided: nd,
-    changed: (isWifi ? 'WiFi' : 'BLE') !== nd,
-    cost: isWifi ? wC : bC, wifi_cost: wA ? wC : null, ble_cost: bA ? bC : null,
-    latency: isWifi ? wLat : bLat, wifi_latency: wLat, ble_latency: bLat,
-    power_cost: isWifi ? wPow : bPow, rssi: isWifi ? wRssi : bRssi,
-    packet_loss: isWifi ? wLoss : bLoss,
-  };
-}
-
-function tracePath(src, dst, nodes, weights) {
-  if (src === dst) return [];
-  var hops = [], visited = new Set();
-  var current = src;
-  while (current !== dst && hops.length < 10) {
-    if (visited.has(current)) break;
-    visited.add(current);
-    if (current === 'GATEWAY') {
-      var nd = nodes[dst]; if (nd) hops.push(buildEndpointHop('GATEWAY', dst, nd, weights)); break;
-    }
-    var fn = nodes[current]; if (!fn) break;
-    if (dst === 'GATEWAY') { hops.push(buildEndpointHop(current, 'GATEWAY', fn, weights)); break; }
-    var rt = fn.routing_table || {}, re = rt[dst];
-    if (re) {
-      var nh = re.next_hop || dst;
-      hops.push(recalcHop(current, nh, fn, re, weights));
-      if (nh === dst) break; current = nh;
-    } else {
-      var nb = fn.neighbours || [];
-      if (nb.includes(dst)) { hops.push(buildEndpointHop(current, dst, fn, weights)); break; }
-      var dstNode = nodes[dst];
-      if (dstNode && !visited.has('GATEWAY')) {
-        hops.push(buildEndpointHop(current, 'GATEWAY', fn, weights));
-        hops.push(buildEndpointHop('GATEWAY', dst, dstNode, weights));
-        break;
-      }
-      hops.push({ from: current, to: dst, protocol: '?', unreachable: true, node_decided: '?', changed: false, wifi_cost: null, ble_cost: null, cost: 0, latency: 0, power_cost: 0, rssi: -99, packet_loss: 1.0 });
-      break;
-    }
-  }
-  return hops;
-}
-
-function analyzePath() {
+async function analyzePath() {
   var src = document.getElementById('srcNode').value;
   var dst = document.getElementById('dstNode').value;
-  if (!src || !dst || !latestData) { lastComputedHops = []; updateApplyPanel(); renderEmptyState(); return; }
-  if (src === dst) { lastComputedHops = []; updateApplyPanel(); renderSameNodeState(); return; }
-  var nodes = latestData.health_matrix && latestData.health_matrix.nodes ? latestData.health_matrix.nodes : {};
-  var weights = WEIGHT_PROFILES[currentMode];
-  var hops = tracePath(src, dst, nodes, weights);
-  lastComputedHops = hops;
-  if (hops.length === 0) { updateApplyPanel(); renderNoRouteState(src, dst); return; }
-  updateApplyPanel();
-  renderResultBanner(hops); renderPathViz(hops); renderSummary(hops); renderHopTable(hops);
+  if (!src || !dst || !latestData) {
+    lastComputedHops = []; updateApplyPanel(); renderEmptyState(); return;
+  }
+  if (src === dst) {
+    lastComputedHops = []; updateApplyPanel(); renderSameNodeState(); return;
+  }
+
+  // If a fetch is already running, queue one retry and bail
+  if (_analyzeInFlight) { _analyzePending = true; return; }
+  _analyzeInFlight = true;
+
+  var gwMode = MODE_TO_GATEWAY[currentMode];
+  try {
+    var resp = await fetch('/api/path_analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ src: src, dst: dst, mode: gwMode })
+    });
+    var data = await resp.json();
+
+    if (data.error) {
+      lastComputedHops = []; updateApplyPanel(); renderNoRouteState(src, dst); return;
+    }
+
+    var hops = data.hops || [];
+    lastComputedHops = hops;
+    if (!hops.length) { updateApplyPanel(); renderNoRouteState(src, dst); return; }
+    updateApplyPanel();
+    renderResultBanner(hops); renderPathViz(hops); renderSummary(hops); renderHopTable(hops);
+
+  } catch(e) {
+    console.error('[PathAnalyze] fetch error:', e);
+    lastComputedHops = []; updateApplyPanel(); renderNoRouteState(src, dst);
+  } finally {
+    _analyzeInFlight = false;
+    if (_analyzePending) {
+      _analyzePending = false;
+      analyzePath();   // run the queued retry once
+    }
+  }
 }
 
 function updateApplyPanel() {
