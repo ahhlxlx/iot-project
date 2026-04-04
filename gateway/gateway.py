@@ -14,9 +14,10 @@ Responsibilities:
       * A local JSON file  (health_matrix.json)
       * A simple REST API  (Flask on port 8080)
   - Print a live terminal dashboard for debugging
+  - BLE ROUTE_PREF advertising for BLE-only nodes
 ===================================================
 Requirements:
-    pip install flask
+    pip install flask bleak
     Python 3.9+
 ===================================================
 """
@@ -30,6 +31,7 @@ import logging
 import copy
 import hmac
 import hashlib
+import subprocess
 from datetime import datetime
 from flask import Flask, jsonify
 
@@ -65,6 +67,14 @@ RSSI_WARN_DBM       = -75
 RSSI_CRIT_DBM       = -85
 NODE_TIMEOUT_SEC    = 60            # Mark node OFFLINE if no packet for this long
 
+# Route preference weight profiles (must match server.py and frontend)
+WEIGHT_PROFILES = {
+    "latency":  {"w_latency": 0.8, "w_packet_loss": 0.15, "w_power": 0.05},
+    "cost":     {"w_latency": 0.3, "w_packet_loss": 0.5,  "w_power": 0.2},
+    "power":    {"w_latency": 0.1, "w_packet_loss": 0.2,  "w_power": 0.7},
+    "balanced": {"w_latency": 0.5, "w_packet_loss": 0.3,  "w_power": 0.2},
+}
+
 # ─────────────────────────────────────────────
 #  LOGGING
 # ─────────────────────────────────────────────
@@ -78,6 +88,11 @@ logging.basicConfig(
     ]
 )
 log = logging.getLogger("gateway")
+
+# Suppress noisy internal debug output from the BLE scanning libraries
+logging.getLogger("bleak").setLevel(logging.WARNING)
+logging.getLogger("dbus_fast").setLevel(logging.WARNING)
+logging.getLogger("bleak.backends.bluezdbus.scanner").setLevel(logging.WARNING)
 
 # ─────────────────────────────────────────────
 #  HEALTH MATRIX  (shared state, thread-safe via lock)
@@ -124,6 +139,10 @@ BLE_PKT_TYPE_HELLO  = 0x01
 BLE_PKT_TYPE_METRIC = 0x02
 BLE_PKT_TYPE_PING   = 0x03
 BLE_PKT_TYPE_PONG   = 0x04
+BLE_PKT_TYPE_ROUTE_PREF = 0x05
+
+# Mode name ↔ byte mapping for BLE ROUTE_PREF encoding
+_ROUTE_MODE_WMAP = {"balanced": 0, "latency": 1, "cost": 2, "power": 3}
 
 def decode_ble_payload(manuf_data):
     """Decode manufacturer-specific BLE advertisement from a mesh node."""
@@ -160,7 +179,7 @@ def find_manuf_data_gw(adv_data_bytes):
             return b[idx + 2: idx + 1 + length]
         idx += 1 + length
     return None
-seq_tracker = {}   # { node_id: { last_seq, expected_seq } }
+seq_tracker = {}   # { (node_id, protocol): { last_seq, expected_seq } }
 
 def sign_packet(pkt_dict):
     """Add HMAC-SHA256 signature to outgoing packet."""
@@ -243,6 +262,8 @@ def process_metric_packet(pkt, sender_ip):
     rt       = pkt.get("routing_table", {})
     nb       = pkt.get("neighbours", [])
     rssi     = pkt.get("rssi", -99)
+    route_mode = pkt.get("route_mode", None)
+    weights    = pkt.get("weights",    None)
     hops     = pkt.get("hop_count", 0)
     protocol = pkt.get("protocol", "WiFi")
 
@@ -252,32 +273,54 @@ def process_metric_packet(pkt, sender_ip):
     loss      = metrics.get("wifi_packet_loss",    metrics.get("ble_packet_loss",    0.0))
     throughput= metrics.get("throughput_est", 0.0)
 
-    # Pull route preference fields if the node included them (sent in every METRIC)
-    route_mode = pkt.get("route_mode", None)
-    weights    = pkt.get("weights",    None)
-
     with matrix_lock:
         existing = health_matrix.get(node_id, {})
 
+        # ── Resolve the correct sender_ip ──────────────────────────────────
+        BLE_PLACEHOLDERS  = ("BLE-direct", "BLE-only", "")
+        relayed_by        = pkt.get("relayed_by", "")
+        is_relayed        = bool(relayed_by and relayed_by != node_id)
+        self_reported_ip  = pkt.get("ip", "")
+        existing_ip       = existing.get("sender_ip", "")
+        existing_wifi_ip  = existing.get("wifi_sender_ip", "")
+
+        if self_reported_ip and self_reported_ip not in BLE_PLACEHOLDERS \
+                and self_reported_ip != "0.0.0.0":
+            resolved_ip    = self_reported_ip
+            wifi_sender_ip = self_reported_ip
+        elif not is_relayed and sender_ip not in BLE_PLACEHOLDERS:
+            resolved_ip    = sender_ip
+            wifi_sender_ip = sender_ip
+        elif existing_ip and existing_ip not in BLE_PLACEHOLDERS:
+            resolved_ip    = existing_ip
+            wifi_sender_ip = existing_wifi_ip if existing_wifi_ip not in BLE_PLACEHOLDERS \
+                             else existing_ip
+        else:
+            resolved_ip    = sender_ip if sender_ip not in BLE_PLACEHOLDERS else "BLE-only"
+            wifi_sender_ip = existing_wifi_ip if existing_wifi_ip not in BLE_PLACEHOLDERS else ""
+
+        sender_ip = resolved_ip
+
         # ── Sequence number tracking ───────────────────────────────
-        if node_id not in seq_tracker:
-            seq_tracker[node_id] = {"last_seq": seq, "expected_seq": seq + 1,
+        seq_key = (node_id, protocol)
+        if seq_key not in seq_tracker:
+            seq_tracker[seq_key] = {"last_seq": seq, "expected_seq": seq + 1,
                                      "total_received": 1, "total_lost": 0}
         else:
-            st     = seq_tracker[node_id]
+            st     = seq_tracker[seq_key]
             gap    = seq - st["last_seq"] - 1
-            # Only count positive gaps as losses; negative means out-of-order
-            # delivery or seq wrap-around — don't subtract from total_lost.
             if gap > 0:
                 st["total_lost"] += gap
-                log.warning(f"[{node_id}] Detected {gap} lost packet(s) (seq {st['last_seq']+1}–{seq-1})")
+                log.warning(f"[{node_id}/{protocol}] Detected {gap} lost packet(s) "
+                            f"(seq {st['last_seq']+1}–{seq-1})")
             elif gap < -1:
-                log.debug(f"[{node_id}] Out-of-order or wrapped seq: last={st['last_seq']} new={seq}")
+                log.debug(f"[{node_id}/{protocol}] Out-of-order or wrapped seq: "
+                          f"last={st['last_seq']} new={seq}")
             st["total_received"] += 1
             st["last_seq"]        = seq
             st["expected_seq"]    = seq + 1
 
-        st          = seq_tracker[node_id]
+        st          = seq_tracker[seq_key]
         total_rx    = st["total_received"]
         total_lost  = st["total_lost"]
         real_loss   = total_lost / (total_rx + total_lost) if (total_rx + total_lost) > 0 else 0.0
@@ -295,6 +338,7 @@ def process_metric_packet(pkt, sender_ip):
             "node_id"         : node_id,
             "protocol"        : protocol,
             "sender_ip"       : sender_ip,
+            "wifi_sender_ip"  : wifi_sender_ip,
             "last_seen"       : now,
             "last_seen_str"   : now_str,
             "rssi"            : rssi,
@@ -310,13 +354,10 @@ def process_metric_packet(pkt, sender_ip):
             "routing_table"   : rt,
             "latency_history" : lat_hist,
             "rssi_history"    : rssi_hist,
-            # Store full per-protocol metrics so server.py and frontend can
-            # access wifi_rssi, ble_rssi, wifi_packet_loss, ble_packet_loss etc.
             "metrics"         : metrics,
-            # Route preference — updated from METRIC packets and ROUTE_PREF_ACK
             "route_mode"      : route_mode or existing.get("route_mode", "balanced"),
             "route_weights"   : weights    or existing.get("route_weights", {}),
-            "route_ack_time"  : existing.get("route_ack_time"),   # last time node ACK'd a pref change
+            "route_ack_time"  : existing.get("route_ack_time"),
         }
 
         score, status, alerts = compute_health_score(node_data)
@@ -361,7 +402,6 @@ def process_hello_packet(pkt, sender_ip):
                 "alerts"     : [],
                 "packets_received": 0,
                 "packets_lost": 0,
-                # Initialise metrics dict so downstream code never gets KeyError
                 "metrics"    : {},
             }
             log.info(f"[Hello] New node discovered: {node_id} @ {sender_ip}")
@@ -370,36 +410,47 @@ def process_hello_packet(pkt, sender_ip):
             health_matrix[node_id]["last_seen_str"] = datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S")
             health_matrix[node_id]["rssi"]          = rssi
             health_matrix[node_id]["routing_table"] = rt
-            # Keep protocol and sender_ip current in case node switched WiFi↔BLE
             health_matrix[node_id]["protocol"]      = pkt.get("protocol", health_matrix[node_id].get("protocol", "WiFi"))
             health_matrix[node_id]["sender_ip"]     = sender_ip
 
 
 # ─────────────────────────────────────────────
-#  PROCESS ROUTE_PREF_ACK  (node confirmed weight update)
+#  PROCESS ROUTE_PREF_ACK
 # ─────────────────────────────────────────────
 def process_route_pref_ack(pkt, sender_ip):
-    """
-    Node sends ROUTE_PREF_ACK after applying new routing weights.
-    Store the confirmed mode + weights so the dashboard can show live status.
-    """
     node_id = pkt.get("node_id")
     if not node_id:
         return
     mode    = pkt.get("mode", "balanced")
     weights = {
-        "w_latency"     : pkt.get("w_latency"),
-        "w_packet_loss" : pkt.get("w_packet_loss"),
-        "w_power"       : pkt.get("w_power"),
+        "w_latency"    : pkt.get("w_latency"),
+        "w_packet_loss": pkt.get("w_packet_loss"),
+        "w_power"      : pkt.get("w_power"),
     }
+    delivery   = pkt.get("delivery", "UDP")
+    relayed_by = pkt.get("relayed_by", "")
+    relay_ok   = pkt.get("relay_ok", True)
     now = time.time()
+
     with matrix_lock:
         if node_id in health_matrix:
-            health_matrix[node_id]["route_mode"]     = mode
-            health_matrix[node_id]["route_weights"]  = weights
-            health_matrix[node_id]["route_ack_time"] = now
-            health_matrix[node_id]["sender_ip"]      = sender_ip   # refresh IP from ACK
-    log.info(f"[RoutePref] ACK from {node_id}: mode={mode} "
+            health_matrix[node_id]["route_mode"]    = mode
+            health_matrix[node_id]["route_weights"] = weights
+            # Only mark as confirmed if delivery actually succeeded.
+            # A relay ACK with relay_ok=False means the BLE broadcast
+            # was attempted but the relay couldn't reach the target.
+            if relay_ok:
+                health_matrix[node_id]["route_ack_time"]= now
+            if sender_ip not in ("BLE-direct", "BLE-only", ""):
+                # Don't overwrite sender_ip for relay ACKs — the relay's IP
+                # is not the target node's IP
+                if not relayed_by:
+                    health_matrix[node_id]["sender_ip"]     = sender_ip
+                    health_matrix[node_id]["wifi_sender_ip"]= sender_ip
+
+    via_str = f" via relay {relayed_by}" if relayed_by else ""
+    log.info(f"[RoutePref] ACK from {node_id}{via_str}: mode={mode} "
+             f"delivery={delivery} "
              f"L={weights['w_latency']} P={weights['w_packet_loss']} W={weights['w_power']}")
 
 
@@ -428,10 +479,6 @@ def persist_loop():
     """Write health_matrix.json every 5 seconds for server.py to read."""
     while True:
         with matrix_lock:
-            # Deep-copy inside the lock so json.dump (which runs outside
-            # the lock) serialises a stable snapshot.  dict(health_matrix)
-            # is only a shallow copy — node sub-dicts (e.g. latency_history)
-            # would still be shared references and could be mutated mid-dump.
             snapshot = {
                 "gateway_timestamp": time.time(),
                 "gateway_time_str" : datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -526,7 +573,6 @@ def verify_packet_raw(raw_bytes):
         payload  = json.dumps(pkt, sort_keys=True, separators=(',', ':')).encode()
         expected = hmac.new(SHARED_KEY, payload, hashlib.sha256).hexdigest()
 
-        # ── Debug: log first 20 chars of each sig so you can spot the mismatch ──
         log.debug(f"[Security] sig_received : {sig[:20]}...")
         log.debug(f"[Security] sig_expected : {expected[:20]}...")
         log.debug(f"[Security] payload_preview: {payload[:80]}")
@@ -555,7 +601,7 @@ def udp_mesh_listener():
             raw, addr = sock.recvfrom(4096)
             sender_ip = addr[0]
 
-            if not verify_packet_raw(raw):        # ← was verify_packet, now consistent
+            if not verify_packet_raw(raw):
                 log.warning(f"[Security] Rejected invalid packet from {sender_ip}")
                 continue
 
@@ -571,6 +617,241 @@ def udp_mesh_listener():
 
 
 # ─────────────────────────────────────────────
+#  GATEWAY BLE ROUTE_PREF ADVERTISING
+#  Uses hcitool on the Raspberry Pi to directly
+#  broadcast ROUTE_PREF packets to BLE-only nodes.
+# ─────────────────────────────────────────────
+
+_gw_ble_route_pref_seq = 0
+_gw_ble_adv_lock = threading.Lock()
+
+def _encode_route_pref_ble(target_node_id, w_latency, w_packet_loss,
+                           w_power, mode, seq):
+    """
+    Encode a 19-byte ROUTE_PREF BLE manufacturer-data payload.
+    Matches ble_code.encode_route_pref() exactly.
+    """
+    raw_b  = target_node_id.encode()[:7]
+    node_b = raw_b + b'\x00' * (7 - len(raw_b))
+    mode_byte = _ROUTE_MODE_WMAP.get(mode, 0)
+    return (BLE_MAGIC
+            + bytes([BLE_PKT_TYPE_ROUTE_PREF])
+            + node_b
+            + bytes([
+                min(255, int(w_latency * 200)),
+                min(255, int(w_packet_loss * 200)),
+                min(255, int(w_power * 200)),
+                mode_byte,
+                seq & 0xFF,
+                0, 0, 0, 0
+            ]))
+
+
+def gateway_ble_advertise_route_pref(target_node_id, w_latency, w_packet_loss,
+                                     w_power, mode, duration_s=3.0):
+    """
+    Directly BLE-advertise a ROUTE_PREF from the Raspberry Pi gateway.
+
+    Uses hcitool HCI commands to set manufacturer-specific advertising data
+    and enable advertising for `duration_s` seconds.  The single advertisement
+    carries one seq number; the Pico's scan window (~50ms every 100ms) will
+    catch it multiple times during the hold period but dedup ensures only
+    one application.
+
+    Args:
+        target_node_id : NODE_ID of the BLE-only target
+        w_latency      : latency weight
+        w_packet_loss  : packet-loss weight
+        w_power        : power weight
+        mode           : "balanced" | "latency" | "cost" | "power"
+        duration_s     : how long to advertise (default 3s)
+
+    Returns: (ok: bool, message: str)
+    """
+    global _gw_ble_route_pref_seq
+
+    if not BLE_SCAN_ENABLED:
+        return False, "BLE not available on gateway"
+
+    with _gw_ble_adv_lock:
+        try:
+            # Increment seq ONCE per delivery attempt.  All `repeat` bursts
+            # carry the same seq so the Pico's IRQ dedup accepts only the
+            # first one — the repeats exist purely for radio reliability.
+            _gw_ble_route_pref_seq = (_gw_ble_route_pref_seq + 1) & 0xFF
+            payload = _encode_route_pref_ble(
+                target_node_id, w_latency, w_packet_loss, w_power,
+                mode, _gw_ble_route_pref_seq
+            )
+
+            # Wrap in BLE AD structure: [length, type=0xFF, payload...]
+            ad = bytes([len(payload) + 1, 0xFF]) + payload
+            ad_len = len(ad)
+
+            # Build hcitool hex args (1 length byte + 31 data bytes)
+            hex_args = [f'{ad_len:02X}'] + [f'{b:02X}' for b in ad]
+            while len(hex_args) < 32:
+                hex_args.append('00')
+
+            # Set advertising data (OGF=0x08 OCF=0x0008)
+            cmd_set = ['sudo', 'hcitool', '-i', 'hci0', 'cmd',
+                       '0x08', '0x0008'] + hex_args
+            result = subprocess.run(cmd_set, timeout=2, capture_output=True)
+            if result.returncode != 0:
+                log.warning(f"[BLE-GW] hcitool set adv data failed: "
+                            f"{result.stderr.decode().strip()}")
+
+            # Enable advertising (OGF=0x08 OCF=0x000A)
+            cmd_on = ['sudo', 'hcitool', '-i', 'hci0', 'cmd',
+                      '0x08', '0x000A', '01']
+            subprocess.run(cmd_on, timeout=2, capture_output=True)
+
+            # Hold advertising for the full duration so scanners can pick it up
+            time.sleep(duration_s)
+
+            # Disable advertising
+            cmd_off = ['sudo', 'hcitool', '-i', 'hci0', 'cmd',
+                       '0x08', '0x000A', '00']
+            subprocess.run(cmd_off, timeout=2, capture_output=True)
+
+            log.info(f"[BLE-GW] ROUTE_PREF advertised for {target_node_id}: "
+                     f"mode={mode} ({duration_s}s hold)")
+            return True, f"BLE ROUTE_PREF advertised for {target_node_id}"
+
+        except FileNotFoundError:
+            msg = "hcitool not found — install bluez package"
+            log.error(f"[BLE-GW] {msg}")
+            return False, msg
+        except subprocess.TimeoutExpired:
+            msg = "hcitool command timed out"
+            log.error(f"[BLE-GW] {msg}")
+            return False, msg
+        except Exception as e:
+            msg = f"BLE advertising error: {e}"
+            log.error(f"[BLE-GW] {msg}")
+            return False, msg
+
+
+# ─────────────────────────────────────────────
+#  ROUTE PREF DELIVERY LOGIC
+#  Unified function for delivering to any node type
+# ─────────────────────────────────────────────
+
+BLE_ONLY_VALUES = {"BLE-direct", "BLE-only", ""}
+
+def _best_ip(nd):
+    """Return the best known WiFi IP for a node entry, or '' if BLE-only."""
+    for field in ("wifi_sender_ip", "sender_ip"):
+        ip = nd.get(field, "")
+        if ip and ip not in BLE_ONLY_VALUES:
+            return ip
+    return ""
+
+
+def deliver_route_pref(node_id, mode, weights, all_nodes):
+    """
+    Deliver a ROUTE_PREF to a single node. Tries all available delivery methods
+    in priority order:
+
+    1. Direct UDP — if the node has a known WiFi IP
+    2. Relay via dual-protocol neighbour — WiFi to relay, relay BLE-advertises
+    3. Direct BLE advertising from gateway — hcitool on Raspberry Pi
+
+    Args:
+        node_id   : target NODE_ID
+        mode      : "balanced" | "latency" | "cost" | "power"
+        weights   : {"w_latency": ..., "w_packet_loss": ..., "w_power": ...}
+        all_nodes : snapshot of health_matrix
+
+    Returns: (ok: bool, message: str, delivery: str)
+    """
+    node_data = all_nodes.get(node_id)
+    if not node_data:
+        return False, f"Node {node_id!r} not in health matrix", "none"
+
+    def _build_signed_pkt(target_node_id):
+        pkt = {
+            "type"         : "ROUTE_PREF",
+            "node_id"      : "GATEWAY",
+            "target"       : target_node_id,
+            "mode"         : mode,
+            "w_latency"    : weights.get("w_latency",     0.5),
+            "w_packet_loss": weights.get("w_packet_loss", 0.3),
+            "w_power"      : weights.get("w_power",       0.2),
+            "timestamp"    : int(time.time()),
+        }
+        payload  = json.dumps(pkt, sort_keys=True, separators=(',', ':')).encode()
+        pkt["sig"] = hmac.new(SHARED_KEY, payload, hashlib.sha256).hexdigest()
+        return pkt
+
+    def _udp_send(ip, pkt):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(2)
+            sock.sendto(json.dumps(pkt).encode(), (ip, MESH_PORT))
+            sock.close()
+            return True, f"sent to {ip}"
+        except Exception as e:
+            return False, str(e)
+
+    # ── Method 1: Direct UDP to node's WiFi IP ──────────────────────────
+    target_ip = _best_ip(node_data)
+    if target_ip:
+        pkt = _build_signed_pkt(node_id)
+        ok, detail = _udp_send(target_ip, pkt)
+        if ok:
+            log.info(f"[RoutePref] UDP → {node_id} @ {target_ip}  mode={mode}")
+            return True, f"ROUTE_PREF sent to {node_id} @ {target_ip}", "UDP"
+        else:
+            log.warning(f"[RoutePref] UDP failed for {node_id} @ {target_ip}: {detail}")
+            # Fall through to try relay/BLE methods
+
+    # ── Method 2: Relay via dual-protocol neighbour ─────────────────────
+    # Find a node that:
+    #   (a) has a real WiFi IP (so we can UDP to it), AND
+    #   (b) lists node_id as a neighbour (so it can reach the BLE target)
+    relay_ip   = ""
+    relay_name = ""
+    for nid, nd in all_nodes.items():
+        if nid == node_id:
+            continue
+        if _best_ip(nd) and node_id in nd.get("neighbours", []):
+            relay_ip   = _best_ip(nd)
+            relay_name = nid
+            break
+
+    if relay_ip:
+        # Send the ROUTE_PREF with the BLE-only node as target;
+        # the relay node will detect it's not for itself and
+        # BLE-advertise it for the BLE-only neighbour.
+        pkt = _build_signed_pkt(node_id)
+        ok, detail = _udp_send(relay_ip, pkt)
+        if ok:
+            log.info(f"[RoutePref] Relay → {node_id} via {relay_name} @ {relay_ip}  mode={mode}")
+            return True, (f"ROUTE_PREF sent to {node_id} via relay "
+                         f"{relay_name} @ {relay_ip}"), "relay"
+        else:
+            log.warning(f"[RoutePref] Relay failed for {node_id} via {relay_name}: {detail}")
+
+    # ── Method 3: Direct BLE advertising from gateway ───────────────────
+    if BLE_SCAN_ENABLED:
+        ok, msg = gateway_ble_advertise_route_pref(
+            node_id,
+            weights.get("w_latency", 0.5),
+            weights.get("w_packet_loss", 0.3),
+            weights.get("w_power", 0.2),
+            mode
+        )
+        if ok:
+            return True, msg, "BLE-direct"
+        log.warning(f"[RoutePref] BLE-direct failed for {node_id}: {msg}")
+
+    # ── All methods exhausted ───────────────────────────────────────────
+    return False, (f"No delivery path for {node_id}: no WiFi IP, "
+                   f"no reachable relay, BLE advertising failed"), "none"
+
+
+# ─────────────────────────────────────────────
 #  FLASK REST API  (for server.py)
 # ─────────────────────────────────────────────
 flask_app = Flask(__name__)
@@ -579,7 +860,6 @@ flask_app = Flask(__name__)
 def api_health_matrix():
     """Full health matrix – server.py polls this."""
     with matrix_lock:
-        # Deep-copy inside lock so Flask/jsonify serialises a stable snapshot
         data = {
             "gateway_timestamp": time.time(),
             "gateway_time_str" : datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -594,52 +874,10 @@ def api_node(node_id):
     """Single node details."""
     with matrix_lock:
         node = health_matrix.get(node_id)
-        # Copy inside the lock so jsonify serialises a stable snapshot,
-        # not a live dict that another thread may mutate mid-serialise.
         node_copy = copy.deepcopy(node) if node else None
     if node_copy:
         return jsonify(node_copy)
     return jsonify({"error": "Node not found"}), 404
-
-@flask_app.route("/route_pref", methods=["POST"])
-def api_route_pref():
-    """Receive weight update from server.py and forward to node via UDP."""
-    data = request.get_json()
-    node_id  = data.get("node_id")
-    mode     = data.get("mode", "balanced")
-    weights  = data.get("weights", {})
-
-    with matrix_lock:
-        node = health_matrix.get(node_id)
-    if not node:
-        return jsonify({"ok": False, "error": f"{node_id} not in health matrix"}), 404
-
-    sender_ip = node.get("sender_ip", "")
-    if not sender_ip or sender_ip in ("BLE-direct", "BLE-only", ""):
-        return jsonify({"ok": False, "error": "BLE-only node — no WiFi IP"}), 400
-
-    cmd = {
-        "type":          "ROUTE_PREF",
-        "node_id":       "GATEWAY",
-        "target":        node_id,
-        "mode":          mode,
-        "w_latency":     weights.get("w_latency", 0.5),
-        "w_packet_loss": weights.get("w_packet_loss", 0.3),
-        "w_power":       weights.get("w_power", 0.2),
-        "timestamp":     int(time.time()),
-    }
-    sign_packet(cmd)
-
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.settimeout(2.0)
-        s.sendto(json.dumps(cmd).encode(), (sender_ip, 5005))
-        s.close()
-        log.info(f"[RoutePref] Forwarded {mode} to {node_id} @ {sender_ip}")
-        return jsonify({"ok": True, "message": f"Sent to {node_id} @ {sender_ip}"})
-    except Exception as e:
-        log.error(f"[RoutePref] Failed: {e}")
-        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @flask_app.route("/summary", methods=["GET"])
@@ -677,9 +915,9 @@ def api_topology():
                     "to"       : dest,
                     "via"      : route.get("next_hop"),
                     "hop_count": route.get("hop_count"),
-                    "latency"  : route.get("avg_latency_ms"),   # key is avg_latency_ms not avg_latency
+                    "latency"  : route.get("avg_latency_ms"),
                     "cost"     : route.get("cost"),
-                    "protocol" : route.get("best_protocol"),    # pass protocol so topology can colour edges
+                    "protocol" : route.get("best_protocol"),
                 })
     return jsonify({"edges": edges})
 
@@ -687,6 +925,117 @@ def api_topology():
 @flask_app.route("/ping", methods=["GET"])
 def api_ping():
     return jsonify({"status": "ok", "gateway": "running"})
+
+
+@flask_app.route("/route_pref", methods=["POST"])
+def api_route_pref():
+    """
+    Push a routing-weight update to a single node.  Handles all node types
+    automatically: WiFi (UDP), BLE-relay (via dual-protocol neighbour),
+    or BLE-direct (gateway BLE advertising).
+
+    Request JSON: { "node_id": "NODE_01", "mode": "latency",
+                    "weights": {"w_latency": 0.8, ...} }
+    """
+    from flask import request as _req
+    body = _req.get_json(silent=True)
+    if not body:
+        return jsonify({"ok": False, "message": "Empty or invalid JSON body"}), 400
+
+    node_id = body.get("node_id", "")
+    mode    = body.get("mode", "balanced")
+    weights = body.get("weights", {})
+
+    if not node_id:
+        return jsonify({"ok": False, "message": "node_id required"}), 400
+
+    # Validate mode — accept both frontend and gateway naming conventions
+    if mode not in WEIGHT_PROFILES:
+        return jsonify({"ok": False,
+                        "message": f"Invalid mode. Use: {list(WEIGHT_PROFILES.keys())}"}), 400
+
+    # If weights not provided, use the profile defaults
+    if not weights:
+        weights = WEIGHT_PROFILES[mode]
+
+    with matrix_lock:
+        all_nodes = copy.deepcopy(health_matrix)
+
+    if node_id not in all_nodes:
+        return jsonify({"ok": False,
+                        "message": f"Node {node_id!r} not in health matrix"}), 404
+
+    ok, message, delivery = deliver_route_pref(node_id, mode, weights, all_nodes)
+    return jsonify({
+        "ok"      : ok,
+        "delivery": delivery,
+        "message" : message,
+    })
+
+
+@flask_app.route("/route_pref_batch", methods=["POST"])
+def api_route_pref_batch():
+    """
+    Push a routing-weight update to multiple nodes at once.
+
+    Request JSON: {
+        "node_ids": ["NODE_01", "NODE_02"],
+        "mode": "latency",
+        "weights": {"w_latency": 0.8, "w_packet_loss": 0.15, "w_power": 0.05}
+    }
+
+    Response: {
+        "mode": "latency",
+        "weights": {...},
+        "node_results": {
+            "NODE_01": {"ok": true, "message": "...", "delivery": "UDP"},
+            "NODE_02": {"ok": true, "message": "...", "delivery": "relay"}
+        },
+        "success_count": 2,
+        "fail_count": 0
+    }
+    """
+    from flask import request as _req
+    body = _req.get_json(silent=True)
+    if not body:
+        return jsonify({"error": "Empty or invalid JSON body"}), 400
+
+    node_ids = body.get("node_ids", [])
+    mode     = body.get("mode", "balanced")
+    weights  = body.get("weights", {})
+
+    if not node_ids:
+        return jsonify({"error": "node_ids list required"}), 400
+
+    if mode not in WEIGHT_PROFILES:
+        return jsonify({"error": f"Invalid mode. Use: {list(WEIGHT_PROFILES.keys())}"}), 400
+
+    if not weights:
+        weights = WEIGHT_PROFILES[mode]
+
+    with matrix_lock:
+        all_nodes = copy.deepcopy(health_matrix)
+
+    results = {}
+    for nid in node_ids:
+        if nid not in all_nodes:
+            results[nid] = {"ok": False, "message": "Node not in health matrix",
+                           "delivery": "none"}
+            continue
+        ok, message, delivery = deliver_route_pref(nid, mode, weights, all_nodes)
+        results[nid] = {"ok": ok, "message": message, "delivery": delivery}
+
+    success_count = sum(1 for r in results.values() if r["ok"])
+    fail_count    = len(results) - success_count
+
+    return jsonify({
+        "mode"         : mode,
+        "weights"      : weights,
+        "node_results" : results,
+        "success_count": success_count,
+        "fail_count"   : fail_count,
+        "total_nodes"  : len(node_ids),
+    })
 
 
 def run_flask():
@@ -718,11 +1067,7 @@ def ble_advertisement_callback(device, advertisement_data):
                 decoded = decode_ble_payload(bytes(payload))
             if decoded is None:
                 continue
-            
-            lat_ms = decoded["lat_ms"]
-            if lat_ms == 0.0 and adv_rssi > -99:
-                lat_ms = rssi_to_ble_latency(adv_rssi)
-            
+
             node_id  = decoded["node_id"]
             pkt_type = decoded["pkt_type"]
             adv_rssi = advertisement_data.rssi or -99
@@ -730,15 +1075,12 @@ def ble_advertisement_callback(device, advertisement_data):
             seq      = decoded["seq"]
 
             # ── Dedup: skip if same seq as last time we processed this node ──
-            # BLE advertises the same packet ~10x/sec – only act on new seq numbers
             last_seq = _ble_last_seq.get(node_id)
             is_new   = (last_seq != seq)
             if is_new:
                 _ble_last_seq[node_id] = seq
 
             if pkt_type == BLE_PKT_TYPE_METRIC:
-                # Always update RSSI (it changes even for same seq)
-                # but only fully process and log on new seq
                 if is_new:
                     pkt = {
                         "type"        : "METRIC",
@@ -753,7 +1095,7 @@ def ble_advertisement_callback(device, advertisement_data):
                         "routing_table": {},
                         "metrics": {
                             "wifi_avg_latency_ms": 0,
-                            "ble_avg_latency_ms" : lat_ms,
+                            "ble_avg_latency_ms" : decoded["lat_ms"],
                             "wifi_packet_loss"   : 1.0,
                             "ble_packet_loss"    : decoded["loss"],
                             "wifi_rssi"          : -99,
@@ -802,13 +1144,6 @@ def ble_gateway_scanner():
         loop.run_until_complete(ble_scan_async())
     except Exception as e:
         log.error(f"[BLE-GW] Fatal: {e}")
-
-def rssi_to_ble_latency(rssi):
-    """Estimate BLE latency from RSSI when no samples available."""
-    if rssi <= -99:
-        return 0.0
-    # -40 dBm (strong) → ~25ms, -80 dBm (weak) → ~80ms
-    return max(20.0, min(120.0, (rssi + 40) * -1.375 + 25))
 
 
 # ─────────────────────────────────────────────

@@ -15,6 +15,12 @@
 ║  Dest | Next Hop | Best Protocol | Hops | Latency | Cost        ║
 ║       |          | WiFi cost vs BLE cost  (compared live)       ║
 ╠══════════════════════════════════════════════════════════════════╣
+║  ROUTE_PREF delivery:                                            ║
+║   WiFi nodes   – receive via UDP directly from gateway           ║
+║   BLE-only     – receive via BLE advertisement (gateway or relay)║
+║   Relay path   – dual-protocol node receives via WiFi, then      ║
+║                  BLE-advertises for nearby BLE-only targets       ║
+╠══════════════════════════════════════════════════════════════════╣
 ║  Module layout:                                                  ║
 ║   ble_code.py   – BLE hardware: encode/decode, advertise, IRQ   ║
 ║   wifi_code.py  – WiFi hardware: connect, UDP socket, send      ║
@@ -30,8 +36,6 @@ import time
 import json
 import hashlib
 import machine
-import sys
-sys.path.append('/Project')
 
 import ble_code
 import wifi_code
@@ -40,6 +44,7 @@ import wifi_code
 from ble_code import (
     BLE_PKT_TYPE_HELLO, BLE_PKT_TYPE_METRIC,
     BLE_PKT_TYPE_PING,  BLE_PKT_TYPE_PONG,
+    BLE_PKT_TYPE_ROUTE_PREF,
 )
 
 # ══════════════════════════════════════════════
@@ -47,12 +52,12 @@ from ble_code import (
 # ══════════════════════════════════════════════
 
 NODE_ID       = "NODE_lx"             # Change to NODE_02, NODE_03 … for each Pico W
-GATEWAY_IP    = "10.202.64.140"        # Raspberry Pi IP
+GATEWAY_IP    = "10.202.64.43"        # Raspberry Pi IP
 WIFI_SSID     = "OnePlus13Equals14"   # Shared WiFi network name
 WIFI_PASSWORD = "gkpm5847"            # Shared WiFi password
 
-ENABLE_WIFI = False
-ENABLE_BLE  = True
+ENABLE_WIFI = True
+ENABLE_BLE  = False
 
 # Cost-function weights  (must sum to 1.0)
 # Updated at runtime via ROUTE_PREF packets from the dashboard
@@ -118,6 +123,13 @@ ping_pending = {}
 last_hello_time  = 0
 last_metric_time = 0
 last_ping_time   = 0
+
+# Track ROUTE_PREF relay requests we've already forwarded (dedup)
+# { target_node_id: last_relayed_seq }
+_route_pref_relay_tracker = {}
+
+# Global sequence counter for ROUTE_PREF BLE relay broadcasts
+_route_pref_ble_seq = 0
 
 
 # ══════════════════════════════════════════════
@@ -453,6 +465,7 @@ def print_routing_table():
     print()
     print("┌──────────────────────────────────────────────────────────────────────────────┐")
     print(f"│  ROUTING TABLE  [{NODE_ID}]  –  Best next hop + protocol per destination  │")
+    print(f"│  Mode: {route_mode}  Weights: L={W_LATENCY:.2f} P={W_PACKET_LOSS:.2f} W={W_POWER:.2f}  │")
     print("├────────────┬────────────┬───────────────┬──────┬────────────┬───────────────┤")
     print("│ Dest       │ Next Hop   │ Best Protocol │ Hops │ Latency ms │ Cost          │")
     print("│            │            │ (WiFi vs BLE) │      │            │ (lower=better)│")
@@ -620,19 +633,8 @@ def send_metrics():
     w_powers = [lnk["power_cost"]  for (_, p), lnk in link_stats.items() if p == "WiFi"]
     b_powers = [lnk["power_cost"]  for (_, p), lnk in link_stats.items() if p == "BLE"]
 
-    avg_w_lat = sum(w_lats) / len(w_lats) if w_lats else 0.0
-    if avg_w_lat == 0.0 and wifi_code.wifi_active:
-        wifi_rssi_val = wifi_code.wifi_rssi()
-        if wifi_rssi_val > -99:
-            avg_w_lat = max(5.0, min(200.0, (-wifi_rssi_val - 30) * 1.5))
-
+    avg_w_lat   = sum(w_lats)   / len(w_lats)   if w_lats   else 0.0
     avg_b_lat   = sum(b_lats)   / len(b_lats)   if b_lats   else 0.0
-    if avg_b_lat == 0.0:
-        ble_rssi_samples = [lnk["rssi"] for (_, p), lnk in link_stats.items()
-                            if p == "BLE" and lnk["rssi"] > -99]
-        if ble_rssi_samples:
-            avg_ble_rssi_est = sum(ble_rssi_samples) / len(ble_rssi_samples)
-            avg_b_lat = max(20.0, min(120.0, (avg_ble_rssi_est + 40) * -1.375 + 25))
     avg_w_loss  = sum(w_losses) / len(w_losses) if w_losses else 0.0
     avg_b_loss  = sum(b_losses) / len(b_losses) if b_losses else 0.0
     avg_b_rssi  = sum(b_rssies) / len(b_rssies) if b_rssies else -99
@@ -641,7 +643,6 @@ def send_metrics():
 
     # Full routing snapshot for the gateway
     rt_snapshot = {}
-    now_rt = time.time()
     for dest, r in routing_table.items():
         rt_snapshot[dest] = {
             "next_hop"      : r["next_hop"],
@@ -656,34 +657,6 @@ def send_metrics():
             "ble_lat"       : r.get("ble_lat"),
         }
 
-    for (node_id, proto), lnk in link_stats.items():
-        if node_id in rt_snapshot:
-            continue
-        if now_rt - lnk["last_seen"] > ROUTE_TIMEOUT:
-            continue
-        lat_est = avg_latency(node_id, proto)
-        if lat_est >= 9999.0:
-            rssi_v = lnk["rssi"]
-            if proto == "BLE" and rssi_v > -99:
-                lat_est = max(20.0, min(120.0, (rssi_v + 40) * -1.375 + 25))
-            elif proto == "WiFi" and rssi_v > -99:
-                lat_est = max(5.0, min(200.0, (-rssi_v - 30) * 1.5))
-            else:
-                lat_est = 88.0 if proto == "BLE" else 50.0
-        cost_est = compute_cost(lat_est, lnk["packet_loss"], lnk["power_cost"])
-        rt_snapshot[node_id] = {
-            "next_hop"      : node_id,
-            "best_protocol" : proto,
-            "hop_count"     : 1,
-            "avg_latency_ms": round(lat_est, 2),
-            "packet_loss"   : lnk["packet_loss"],
-            "cost"          : round(cost_est, 6),
-            "wifi_cost"     : round(cost_est, 6) if proto == "WiFi" else None,
-            "ble_cost"      : round(cost_est, 6) if proto == "BLE"  else None,
-            "wifi_lat"      : round(lat_est, 2)  if proto == "WiFi" else None,
-            "ble_lat"       : round(lat_est, 2)  if proto == "BLE"  else None,
-        }
-
     # ── 1. WiFi metric packet → gateway ────────────────────────────
     wifi_pkt = {
         "type"         : "METRIC",
@@ -694,10 +667,7 @@ def send_metrics():
         "hop_count"    : 0,
         "rssi"         : rssi,
         "ip"           : wifi_code.my_ip,
-        "neighbours"   : list(set(
-            n for (n, p), lnk in link_stats.items()
-            if (time.time() - lnk["last_seen"]) < ROUTE_TIMEOUT
-        )),
+        "neighbours"   : list(set(n for (n, _) in link_stats.keys())),
         "routing_table": rt_snapshot,
         "route_mode"   : route_mode,
         "weights"      : {
@@ -734,6 +704,76 @@ def send_metrics():
 
 
 # ══════════════════════════════════════════════
+#  ROUTE_PREF RELAY  (dual-protocol node → BLE-only target)
+# ══════════════════════════════════════════════
+
+def relay_route_pref_via_ble(target_node_id, w_latency, w_packet_loss,
+                             w_power, mode_name):
+    """
+    Called when this dual-protocol node receives a ROUTE_PREF via WiFi
+    for a target that is a BLE-only neighbour. We BLE-advertise the
+    ROUTE_PREF so the target can pick it up via its BLE scanner.
+
+    Dedup: tracks seq per target to avoid re-broadcasting the same
+    update if the gateway retries.
+
+    Args:
+        target_node_id : NODE_ID of the BLE-only target
+        w_latency      : latency weight
+        w_packet_loss  : packet-loss weight
+        w_power        : power weight
+        mode_name      : "balanced" | "latency" | "cost" | "power"
+    """
+    global _route_pref_ble_seq
+
+    if not ble_code.ble_active:
+        print(f"[Relay] Cannot relay ROUTE_PREF for {target_node_id}: BLE not active")
+        return False
+
+    # Check if target is a known BLE neighbour
+    ble_lnk = link_stats.get((target_node_id, "BLE"))
+    if not ble_lnk or (time.time() - ble_lnk["last_seen"]) > ROUTE_TIMEOUT:
+        print(f"[Relay] Cannot relay ROUTE_PREF for {target_node_id}: "
+              f"not a fresh BLE neighbour")
+        return False
+
+    _route_pref_ble_seq = (_route_pref_ble_seq + 1) & 0xFF
+
+    ok = ble_code.ble_advertise_route_pref(
+        target_node_id, w_latency, w_packet_loss, w_power,
+        mode_name, _route_pref_ble_seq,
+        repeat=4, hold_ms=250   # 4 bursts × 250ms = 1s total
+    )
+
+    if ok:
+        _route_pref_relay_tracker[target_node_id] = _route_pref_ble_seq
+        # Cap tracker size to prevent unbounded RAM growth on Pico W
+        if len(_route_pref_relay_tracker) > 20:
+            oldest = next(iter(_route_pref_relay_tracker))
+            del _route_pref_relay_tracker[oldest]
+        print(f"[Relay] ROUTE_PREF BLE-relayed for {target_node_id}  "
+              f"mode={mode_name} seq={_route_pref_ble_seq}")
+    return ok
+
+
+def _has_fresh_ble_link(target_node_id):
+    """
+    Check if we have a fresh BLE link to the target node.
+    Used to decide whether we can relay a ROUTE_PREF via BLE.
+
+    Note: we intentionally do NOT check WiFi status here. The gateway
+    sends us a ROUTE_PREF-to-relay because its own direct delivery
+    failed. Whether we also have WiFi to the target is irrelevant —
+    the BLE advertisement is the delivery mechanism the gateway chose.
+    """
+    now = time.time()
+    ble_lnk  = link_stats.get((target_node_id, "BLE"))
+    return (ble_lnk
+            and ble_lnk["last_seen"] > 0
+            and (now - ble_lnk["last_seen"]) < ROUTE_TIMEOUT)
+
+
+# ══════════════════════════════════════════════
 #  PROCESS INCOMING WiFi PACKETS
 # ══════════════════════════════════════════════
 
@@ -745,7 +785,8 @@ def process_wifi_packets():
       PING       – reply with PONG + BLE RSSI we measured for that sender
       PONG       – record RTT, update BLE RSSI, rebuild routing table
       METRIC     – relay towards gateway (mesh forwarding, max 10 hops)
-      ROUTE_PREF – update cost-function weights from dashboard; ACK back
+      ROUTE_PREF – update cost-function weights from dashboard; ACK back;
+                   relay via BLE if target is a BLE-only neighbour
     """
     global W_LATENCY, W_PACKET_LOSS, W_POWER, route_mode
 
@@ -766,6 +807,78 @@ def process_wifi_packets():
 
             ptype   = pkt.get("type")
             node_id = pkt.get("node_id", "")
+
+            # ── ROUTE_PREF ─────────────────────────────────────────
+            # Handle before the node_id self-check because ROUTE_PREF
+            # uses "GATEWAY" as node_id (the sender), not our ID.
+            # The target field determines who should apply it.
+            if ptype == "ROUTE_PREF":
+                target = pkt.get("target", "")
+
+                if target == NODE_ID:
+                    # ── This ROUTE_PREF is for US ──────────────────
+                    new_wl   = pkt.get("w_latency")
+                    new_wp   = pkt.get("w_packet_loss")
+                    new_ww   = pkt.get("w_power")
+                    new_mode = pkt.get("mode", "balanced")
+                    if new_wl is not None and new_wp is not None and new_ww is not None:
+                        W_LATENCY     = float(new_wl)
+                        W_PACKET_LOSS = float(new_wp)
+                        W_POWER       = float(new_ww)
+                        route_mode    = new_mode
+                        rebuild_routing_table()
+                        print(f"[RoutePref] Updated to {new_mode}: "
+                              f"L={W_LATENCY} P={W_PACKET_LOSS} W={W_POWER}")
+                        # ACK back so the dashboard knows the update was applied
+                        ack = {
+                            "type"          : "ROUTE_PREF_ACK",
+                            "node_id"       : NODE_ID,
+                            "mode"          : new_mode,
+                            "w_latency"     : W_LATENCY,
+                            "w_packet_loss" : W_PACKET_LOSS,
+                            "w_power"       : W_POWER,
+                            "timestamp"     : int(time.time()),
+                        }
+                        sign_packet(ack)
+                        wifi_code.udp_send(sender_ip, UDP_MESH_PORT, ack)
+
+                elif ble_code.valid_node_id(target) and _has_fresh_ble_link(target):
+                    # ── This ROUTE_PREF is for a neighbour we can reach via BLE ──
+                    # We are a dual-protocol relay: forward it via BLE advertisement.
+                    new_wl   = pkt.get("w_latency",     0.5)
+                    new_wp   = pkt.get("w_packet_loss", 0.3)
+                    new_ww   = pkt.get("w_power",       0.2)
+                    new_mode = pkt.get("mode", "balanced")
+
+                    ok = relay_route_pref_via_ble(
+                        target, new_wl, new_wp, new_ww, new_mode)
+
+                    # Send a relay ACK back to the gateway so it knows
+                    # we attempted the BLE delivery
+                    relay_ack = {
+                        "type"          : "ROUTE_PREF_ACK",
+                        "node_id"       : target,           # report on behalf of target
+                        "relayed_by"    : NODE_ID,
+                        "mode"          : new_mode,
+                        "w_latency"     : new_wl,
+                        "w_packet_loss" : new_wp,
+                        "w_power"       : new_ww,
+                        "timestamp"     : int(time.time()),
+                        "delivery"      : "BLE-relay",
+                        "relay_ok"      : ok,
+                    }
+                    sign_packet(relay_ack)
+                    wifi_code.udp_send(sender_ip, UDP_MESH_PORT, relay_ack)
+
+                    if ok:
+                        print(f"[Relay] ROUTE_PREF for {target} forwarded via BLE")
+                    else:
+                        print(f"[Relay] ROUTE_PREF for {target} BLE relay FAILED")
+
+                # else: target is not us and not a BLE-only neighbour → ignore
+                continue
+
+            # For all other packet types, filter by node_id
             if node_id == NODE_ID or not ble_code.valid_node_id(node_id):
                 continue   # ignore our own reflections and rogue nodes
 
@@ -831,35 +944,6 @@ def process_wifi_packets():
                     wifi_code.udp_send(GATEWAY_IP, UDP_GW_PORT, pkt)
                     print(f"[Relay] Forwarded METRIC from {node_id} hop={hop}")
 
-            # ── ROUTE_PREF (dashboard weight update) ───────────────
-            elif ptype == "ROUTE_PREF":
-                target = pkt.get("target", "")
-                if target == NODE_ID:
-                    new_wl   = pkt.get("w_latency")
-                    new_wp   = pkt.get("w_packet_loss")
-                    new_ww   = pkt.get("w_power")
-                    new_mode = pkt.get("mode", "balanced")
-                    if new_wl is not None and new_wp is not None and new_ww is not None:
-                        W_LATENCY     = float(new_wl)
-                        W_PACKET_LOSS = float(new_wp)
-                        W_POWER       = float(new_ww)
-                        route_mode    = new_mode
-                        rebuild_routing_table()
-                        print(f"[RoutePref] Updated to {new_mode}: "
-                              f"L={W_LATENCY} P={W_PACKET_LOSS} W={W_POWER}")
-                        # ACK back so the dashboard knows the update was applied
-                        ack = {
-                            "type"          : "ROUTE_PREF_ACK",
-                            "node_id"       : NODE_ID,
-                            "mode"          : new_mode,
-                            "w_latency"     : W_LATENCY,
-                            "w_packet_loss" : W_PACKET_LOSS,
-                            "w_power"       : W_POWER,
-                            "timestamp"     : time.time(),
-                        }
-                        sign_packet(ack)
-                        wifi_code.udp_send(sender_ip, UDP_MESH_PORT, ack)
-
     except OSError as e:
         # errno 11 = EAGAIN: non-blocking socket has no data – completely normal.
         # Any other OSError is a real socket fault and should be logged.
@@ -881,6 +965,7 @@ def process_ble_buffer():
       HELLO / METRIC – record BLE link quality; relay to gateway via WiFi
                        if sender has no WiFi link (BLE→WiFi relay)
       PING           – respond via WiFi PONG carrying the BLE RSSI we measured
+      ROUTE_PREF     – apply new routing weights from gateway (BLE delivery)
     """
     while ble_code.ble_rx_buffer:
         decoded  = ble_code.ble_rx_buffer.pop(0)
@@ -891,6 +976,45 @@ def process_ble_buffer():
         loss     = decoded.get("loss", 0.0)
         now      = time.time()
 
+        # ROUTE_PREF packets come from the gateway, not a mesh node:
+        # they carry target_node_id instead of node_id and have no
+        # link-quality fields. Handle them separately before the block
+        # below that unconditionally updates link_stats.
+        if pkt_type == BLE_PKT_TYPE_ROUTE_PREF:
+            target = decoded.get("target_node_id", "")
+            if target != NODE_ID:
+                continue   # paranoia: IRQ already filtered, but double-check
+
+            global W_LATENCY, W_PACKET_LOSS, W_POWER, route_mode
+            W_LATENCY     = decoded.get("w_latency",     W_LATENCY)
+            W_PACKET_LOSS = decoded.get("w_packet_loss", W_PACKET_LOSS)
+            W_POWER       = decoded.get("w_power",       W_POWER)
+            route_mode    = decoded.get("mode",          route_mode)
+            rebuild_routing_table()
+            print(f"[RoutePref] BLE: mode={route_mode}  "
+                  f"L={W_LATENCY:.2f} P={W_PACKET_LOSS:.2f} W={W_POWER:.2f}")
+
+            # ── BLE→WiFi implicit confirmation ─────────────────────
+            # BLE-only nodes can't UDP-ACK, but if we have WiFi we
+            # send a proper ACK so the gateway confirms immediately.
+            if wifi_code.wifi_active:
+                ack = {
+                    "type"          : "ROUTE_PREF_ACK",
+                    "node_id"       : NODE_ID,
+                    "mode"          : route_mode,
+                    "w_latency"     : W_LATENCY,
+                    "w_packet_loss" : W_PACKET_LOSS,
+                    "w_power"       : W_POWER,
+                    "timestamp"     : int(time.time()),
+                    "delivery"      : "BLE-received",
+                }
+                sign_packet(ack)
+                wifi_code.udp_send(GATEWAY_IP, UDP_MESH_PORT, ack)
+                print(f"[RoutePref] ACK sent to gateway via WiFi")
+
+            continue
+
+        # ── All other packet types: update BLE link stats first ────────────
         lnk = get_link(node_id, "BLE")
         lnk["rssi"]       = adv_rssi
         lnk["last_seen"]  = now
@@ -915,77 +1039,22 @@ def process_ble_buffer():
                                    and link_stats[wifi_key]["last_seen"] > 0
                                    and (time.time() - link_stats[wifi_key]["last_seen"]) < ROUTE_TIMEOUT)
                 if wifi_code.wifi_active and not sender_has_wifi:
-                    # Estimate latency if not available
-                    relay_lat = lat_ms
-                    if relay_lat == 0.0 and adv_rssi > -99:
-                        relay_lat = max(20.0, min(120.0, (adv_rssi + 40) * -1.375 + 25))
-
-                    # Build what we know about the relayed node's peers
-                    # We are a known neighbour of the relayed node since we can hear it
-                    relay_neighbours = [NODE_ID]
-                    relay_rt = {
-                        NODE_ID: {
-                            "next_hop"      : NODE_ID,
-                            "best_protocol" : "BLE",
-                            "hop_count"     : 1,
-                            "avg_latency_ms": round(relay_lat, 2),
-                            "packet_loss"   : loss,
-                            "cost"          : round(compute_cost(relay_lat, loss,
-                                                min(1.0, max(0.05, (-adv_rssi - 50) / 40.0))), 6),
-                            "wifi_cost"     : None,
-                            "ble_cost"      : round(compute_cost(relay_lat, loss,
-                                                min(1.0, max(0.05, (-adv_rssi - 50) / 40.0))), 6),
-                            "wifi_lat"      : None,
-                            "ble_lat"       : round(relay_lat, 2),
-                        }
-                    }
-
-                    # Also include any other peers we know the relayed node has
-                    # (if they appear in our own link_stats as BLE neighbours)
-                    for (peer_id, peer_proto), peer_lnk in link_stats.items():
-                        if peer_id == node_id or peer_id == NODE_ID:
-                            continue
-                        if now - peer_lnk["last_seen"] > ROUTE_TIMEOUT:
-                            continue
-                        peer_lat = avg_latency(peer_id, peer_proto)
-                        if peer_lat >= 9999.0 and peer_lnk["rssi"] > -99:
-                            peer_rssi = peer_lnk["rssi"]
-                            peer_lat = (max(20.0, min(120.0, (peer_rssi + 40) * -1.375 + 25))
-                                        if peer_proto == "BLE"
-                                        else max(5.0, min(200.0, (-peer_rssi - 30) * 1.5)))
-                        relay_neighbours.append(peer_id)
-                        relay_rt[peer_id] = {
-                            "next_hop"      : peer_id,
-                            "best_protocol" : peer_proto,
-                            "hop_count"     : 1,
-                            "avg_latency_ms": round(peer_lat, 2),
-                            "packet_loss"   : peer_lnk["packet_loss"],
-                            "cost"          : round(compute_cost(peer_lat, peer_lnk["packet_loss"],
-                                                                peer_lnk["power_cost"]), 6),
-                            "wifi_cost"     : round(compute_cost(peer_lat, peer_lnk["packet_loss"],
-                                                    peer_lnk["power_cost"]), 6) if peer_proto == "WiFi" else None,
-                            "ble_cost"      : round(compute_cost(peer_lat, peer_lnk["packet_loss"],
-                                                    peer_lnk["power_cost"]), 6) if peer_proto == "BLE"  else None,
-                            "wifi_lat"      : round(peer_lat, 2) if peer_proto == "WiFi" else None,
-                            "ble_lat"       : round(peer_lat, 2) if peer_proto == "BLE"  else None,
-                        }
-
                     relay_pkt = {
                         "type"         : "METRIC",
-                        "node_id"      : node_id,
-                        "protocol"     : "BLE",
+                        "node_id"      : node_id,        # original sender's ID
+                        "protocol"     : "BLE",           # flag as BLE-sourced
                         "timestamp"    : now,
                         "seq_number"   : decoded.get("seq_hop", 0),
                         "hop_count"    : 1,
-                        "rssi"         : adv_rssi,
+                        "rssi"         : adv_rssi,        # BLE RSSI we measured
                         "ip"           : "BLE-only",
-                        "relayed_by"   : NODE_ID,
-                        "neighbours"   : list(set(relay_neighbours)),
-                        "routing_table": relay_rt,
+                        "relayed_by"   : NODE_ID,         # us
+                        "neighbours"   : [NODE_ID],
+                        "routing_table": {},
                         "metrics": {
                             "wifi_avg_latency_ms": 0,
-                            "ble_avg_latency_ms" : relay_lat,
-                            "wifi_packet_loss"   : 1.0,
+                            "ble_avg_latency_ms" : lat_ms,
+                            "wifi_packet_loss"   : 1.0,   # no WiFi = 100% WiFi loss
                             "ble_packet_loss"    : loss,
                             "wifi_rssi"          : -99,
                             "ble_rssi"           : adv_rssi,

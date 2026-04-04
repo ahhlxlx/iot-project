@@ -7,6 +7,7 @@
 ║   • BLE hardware setup (scanning + advertising)                  ║
 ║   • IRQ handler → fills ble_rx_buffer for main loop             ║
 ║   • Proxy-advertising WiFi-only neighbours over BLE              ║
+║   • ROUTE_PREF encoding / advertising for relay delivery         ║
 ║                                                                  ║
 ║  No imports from node_main / wifi_code – zero circular deps.    ║
 ║  Call setup_ble(node_id) once from node_main to initialise.     ║
@@ -21,11 +22,17 @@ from micropython import const
 #  BLE PACKET TYPE CONSTANTS
 # ══════════════════════════════════════════════
 
-BLE_MAGIC           = b'\xAA\xBB'
-BLE_PKT_TYPE_HELLO  = 0x01
-BLE_PKT_TYPE_METRIC = 0x02
-BLE_PKT_TYPE_PING   = 0x03
-BLE_PKT_TYPE_PONG   = 0x04
+BLE_MAGIC                = b'\xAA\xBB'
+BLE_PKT_TYPE_HELLO       = 0x01
+BLE_PKT_TYPE_METRIC      = 0x02
+BLE_PKT_TYPE_PING        = 0x03
+BLE_PKT_TYPE_PONG        = 0x04
+BLE_PKT_TYPE_ROUTE_PREF  = 0x05   # gateway → node route-weight update via BLE
+
+# Mode byte ↔ name (used when decoding a gateway ROUTE_PREF advertisement)
+_ROUTE_MODE_RMAP = {0: "balanced", 1: "latency", 2: "cost", 3: "power"}
+# Name → mode byte (used when encoding a ROUTE_PREF for BLE advertisement)
+_ROUTE_MODE_WMAP = {"balanced": 0, "latency": 1, "cost": 2, "power": 3}
 
 # ══════════════════════════════════════════════
 #  MODULE-LEVEL STATE
@@ -44,6 +51,10 @@ _ble_recv_count = {}   # { node_id: int }
 # Set by setup_ble() – used by the IRQ to filter our own advertisements
 _MY_NODE_ID = ""
 
+# Dedup: gateway sends each ROUTE_PREF seq several times to fight packet loss.
+# We only apply a given seq once — compare against this before buffering.
+_last_route_pref_seq = -1
+
 
 # ══════════════════════════════════════════════
 #  BLE PACKET ENCODING / DECODING
@@ -60,6 +71,17 @@ _MY_NODE_ID = ""
 #   [15]   RSSI shifted  (rssi + 128 → 0..255)
 #   [16-17] latency * 10 (uint16 big-endian, max 6553.5 ms)
 #   [18]   packet loss * 255 (uint8)
+#
+#  ROUTE_PREF layout (19 bytes):
+#   [0-1]  magic 0xAA 0xBB
+#   [2]    packet type  = 0x05
+#   [3-9]  target NODE_ID (7 bytes ASCII, zero-padded)
+#   [10]   w_latency     * 200 (uint8)
+#   [11]   w_packet_loss * 200 (uint8)
+#   [12]   w_power       * 200 (uint8)
+#   [13]   mode byte (0=balanced 1=latency 2=cost 3=power)
+#   [14]   seq (uint8, for dedup)
+#   [15-18] zero padding
 # ══════════════════════════════════════════════
 
 def encode_ble(pkt_type, seq_hop, ts, rssi, lat_ms, loss_pct,
@@ -93,6 +115,41 @@ def encode_ble(pkt_type, seq_hop, ts, rssi, lat_ms, loss_pct,
             + bytes([rssi_b, (lat_b >> 8) & 0xFF, lat_b & 0xFF, loss_b]))
 
 
+def encode_route_pref(target_node_id, w_latency, w_packet_loss, w_power,
+                      mode, seq):
+    """
+    Encode a ROUTE_PREF into a 19-byte BLE manufacturer-data payload.
+
+    This is used by:
+      • The gateway (Raspberry Pi) to BLE-advertise directly to BLE-only nodes.
+      • Dual-protocol relay nodes to forward a gateway ROUTE_PREF over BLE.
+
+    Args:
+        target_node_id : NODE_ID of the node that should apply these weights
+        w_latency      : latency weight 0.0–1.0
+        w_packet_loss  : packet-loss weight 0.0–1.0
+        w_power        : power weight 0.0–1.0
+        mode           : "balanced" | "latency" | "cost" | "power"
+        seq            : dedup sequence number (uint8)
+
+    Returns: bytes of length 19
+    """
+    raw_b  = target_node_id.encode()[:7]
+    node_b = raw_b + b'\x00' * (7 - len(raw_b))
+    mode_byte = _ROUTE_MODE_WMAP.get(mode, 0)
+    return (BLE_MAGIC
+            + bytes([BLE_PKT_TYPE_ROUTE_PREF])
+            + node_b
+            + bytes([
+                min(255, int(w_latency * 200)),
+                min(255, int(w_packet_loss * 200)),
+                min(255, int(w_power * 200)),
+                mode_byte,
+                seq & 0xFF,
+                0, 0, 0, 0   # padding to reach 19 bytes
+            ]))
+
+
 def decode_ble(raw):
     """
     Decode a 19-byte manufacturer-data payload into a metric dict.
@@ -103,9 +160,26 @@ def decode_ble(raw):
         b = bytes(raw)
         if len(b) < 19 or b[0:2] != BLE_MAGIC:
             return None
+
+        pkt_type  = b[2]
+        node_field = b[3:10].rstrip(b'\x00').decode('utf-8')
+
+        # ── ROUTE_PREF from gateway: completely different field meanings ──
+        if pkt_type == BLE_PKT_TYPE_ROUTE_PREF:
+            return {
+                "pkt_type"      : pkt_type,
+                "target_node_id": node_field,          # [3-9] = target, not sender
+                "w_latency"     : b[10] / 200.0,
+                "w_packet_loss" : b[11] / 200.0,
+                "w_power"       : b[12] / 200.0,
+                "mode"          : _ROUTE_MODE_RMAP.get(b[13], "balanced"),
+                "seq"           : b[14],
+            }
+
+        # ── Standard HELLO / METRIC / PING / PONG ──
         return {
-            "pkt_type": b[2],
-            "node_id" : b[3:10].rstrip(b'\x00').decode('utf-8'),
+            "pkt_type": pkt_type,
+            "node_id" : node_field,
             "seq_hop" : b[10],
             "ts"      : int.from_bytes(b[11:15], 'big'),
             "rssi"    : b[15] - 128,
@@ -154,21 +228,44 @@ def valid_node_id(node_id):
 def ble_irq(event, data):
     """
     Hardware IRQ fired for every BLE scan result.
-    Only appends valid, foreign mesh packets to ble_rx_buffer.
+    Only appends valid mesh packets to ble_rx_buffer.
     Processing is deferred to process_ble_buffer() in node_main.
+
+    Packet routing:
+      ROUTE_PREF  – accept only if target_node_id == _MY_NODE_ID and seq is new.
+                    The gateway re-sends the same seq multiple times; dedup prevents
+                    applying the same weight update more than once.
+      All others  – accept only if sender node_id is foreign and valid.
     """
+    global _last_route_pref_seq
     _IRQ_SCAN_RESULT = const(5)
     if event == _IRQ_SCAN_RESULT:
         addr_type, addr, adv_type, rssi, adv_data = data
         manuf = find_manuf_data(adv_data)
         if manuf and len(manuf) >= 19:
             decoded = decode_ble(manuf)
-            if (decoded
-                    and decoded["node_id"]
+            if decoded is None:
+                return
+
+            pkt_type = decoded.get("pkt_type")
+
+            if pkt_type == BLE_PKT_TYPE_ROUTE_PREF:
+                # Accept only if we are the target and it's a new seq number
+                target = decoded.get("target_node_id", "")
+                seq    = decoded.get("seq", -1)
+                if target == _MY_NODE_ID and seq != _last_route_pref_seq:
+                    _last_route_pref_seq = seq
+                    ble_rx_buffer.append(decoded)
+
+            elif (decoded.get("node_id")
                     and decoded["node_id"] != _MY_NODE_ID
                     and valid_node_id(decoded["node_id"])):
                 decoded["adv_rssi"] = rssi   # RSSI as measured by our radio
-                ble_rx_buffer.append(decoded)
+                # Cap buffer size to prevent OOM when main loop is blocked
+                # (e.g. during 1-second BLE relay advertising).
+                # IRQ fires ~10/sec; 50 entries ≈ 5 seconds of headroom.
+                if len(ble_rx_buffer) < 50:
+                    ble_rx_buffer.append(decoded)
 
 
 # ══════════════════════════════════════════════
@@ -253,3 +350,51 @@ def ble_advertise_proxy(target_node_id, pkt_type, seq_hop, ts,
         ble_obj.gap_advertise(100_000, adv_data=own_ad)
     except Exception as e:
         print(f"[BLE]  Proxy advertise error for {target_node_id}: {e}")
+
+
+def ble_advertise_route_pref(target_node_id, w_latency, w_packet_loss,
+                             w_power, mode, seq, repeat=3, hold_ms=200):
+    """
+    BLE-advertise a ROUTE_PREF on behalf of the gateway.
+
+    Used by dual-protocol relay nodes to deliver routing-weight updates
+    to BLE-only neighbours that the gateway cannot reach via UDP.
+
+    The advertisement is repeated `repeat` times with `hold_ms` between
+    each burst, then the node's own HELLO advertisement is restored.
+
+    Args:
+        target_node_id : NODE_ID of the BLE-only target node
+        w_latency      : latency weight (0.0–1.0)
+        w_packet_loss  : packet-loss weight (0.0–1.0)
+        w_power        : power weight (0.0–1.0)
+        mode           : "balanced" | "latency" | "cost" | "power"
+        seq            : dedup sequence (uint8)
+        repeat         : number of advertisement bursts (default 3)
+        hold_ms        : milliseconds to hold each burst (default 200)
+    """
+    if not ble_active or ble_obj is None:
+        print(f"[BLE]  Cannot relay ROUTE_PREF for {target_node_id}: BLE not active")
+        return False
+    try:
+        payload = encode_route_pref(target_node_id, w_latency, w_packet_loss,
+                                    w_power, mode, seq)
+        ad = bytes([len(payload) + 1, 0xFF]) + payload
+
+        for i in range(repeat):
+            ble_obj.gap_advertise(100_000, adv_data=ad)
+            time.sleep(hold_ms / 1000.0)
+
+        # Restore our own HELLO advertisement
+        ts   = time.time()
+        rssi = -70   # placeholder; will be overwritten next HELLO cycle
+        own_payload = encode_ble(BLE_PKT_TYPE_HELLO, 0, ts, rssi, 0.0, 0.0)
+        own_ad = bytes([len(own_payload) + 1, 0xFF]) + own_payload
+        ble_obj.gap_advertise(100_000, adv_data=own_ad)
+
+        print(f"[BLE]  ROUTE_PREF relayed for {target_node_id}: "
+              f"mode={mode} seq={seq} (×{repeat})")
+        return True
+    except Exception as e:
+        print(f"[BLE]  ROUTE_PREF relay error for {target_node_id}: {e}")
+        return False
