@@ -429,16 +429,31 @@ def _ble_advertise_hcitool(ad_bytes, duration_s):
         hex_args = [f'{ad_len:02X}'] + [f'{b:02X}' for b in ad_bytes]
         while len(hex_args) < 32:
             hex_args.append('00')
-        # Set advertising data
+
+        # Step 1: Set advertising PARAMETERS (required before enable!)
+        # OGF=0x08 OCF=0x0006 = LE Set Advertising Parameters
+        # Interval min: 0x00A0 = 160 × 0.625ms = 100ms
+        # Interval max: 0x00A0 = 100ms
+        # Adv type: 0x03 = ADV_NONCONN_IND (non-connectable, visible to passive scanners)
+        # Own addr: 0x00 = public, Peer addr type: 0x00, Peer addr: 00×6
+        # Channel map: 0x07 = all 3 channels, Filter: 0x00
+        cmd_params = ['sudo', 'hcitool', '-i', 'hci0', 'cmd', '0x08', '0x0006',
+                      'A0', '00', 'A0', '00', '03', '00', '00',
+                      '00', '00', '00', '00', '00', '00', '07', '00']
+        subprocess.run(cmd_params, timeout=2, capture_output=True)
+
+        # Step 2: Set advertising data
         cmd_set = ['sudo', 'hcitool', '-i', 'hci0', 'cmd', '0x08', '0x0008'] + hex_args
         result = subprocess.run(cmd_set, timeout=2, capture_output=True)
         if result.returncode != 0:
             return False, f"hcitool set-adv failed: {result.stderr.decode().strip()}"
-        # Enable advertising
+
+        # Step 3: Enable advertising
         subprocess.run(['sudo', 'hcitool', '-i', 'hci0', 'cmd', '0x08', '0x000A', '01'],
                       timeout=2, capture_output=True)
         time.sleep(duration_s)
-        # Disable
+
+        # Step 4: Disable advertising
         subprocess.run(['sudo', 'hcitool', '-i', 'hci0', 'cmd', '0x08', '0x000A', '00'],
                       timeout=2, capture_output=True)
         return True, "hcitool"
@@ -451,7 +466,7 @@ def _ble_advertise_hcitool(ad_bytes, duration_s):
 
 
 def gateway_ble_advertise_route_pref(target_node_id, w_latency, w_packet_loss,
-                                     w_power, mode, duration_s=1.5):
+                                     w_power, mode, duration_s=2.5):
     """
     BLE-advertise a ROUTE_PREF from the Raspberry Pi gateway.
     Tries btmgmt first, falls back to hcitool. Duration reduced
@@ -536,6 +551,21 @@ def deliver_route_pref(node_id, mode, weights, all_nodes):
             return True, f"sent to {ip}"
         except Exception as e: return False, str(e)
 
+    def _optimistic_update(delivery_method):
+        """
+        For BLE-only nodes that can't ACK, optimistically update the
+        health_matrix so the dashboard shows the mode change immediately.
+        The route_ack_time is NOT set (remains None) to indicate
+        'sent but unconfirmed' — distinct from a proper WiFi ACK.
+        """
+        with matrix_lock:
+            if node_id in health_matrix:
+                health_matrix[node_id]["route_mode"]    = mode
+                health_matrix[node_id]["route_weights"] = weights
+                # Don't set route_ack_time — that's reserved for confirmed ACKs
+                log.info(f"[RoutePref] Optimistic update for {node_id}: "
+                         f"mode={mode} delivery={delivery_method} (unconfirmed)")
+
     # Method 1: Direct UDP
     target_ip = _best_ip(node_data)
     if target_ip:
@@ -557,6 +587,7 @@ def deliver_route_pref(node_id, mode, weights, all_nodes):
         ok, detail = _udp_send(relay_ip, pkt)
         if ok:
             log.info(f"[RoutePref] Relay → {node_id} via {relay_name} @ {relay_ip}  mode={mode}")
+            _optimistic_update("relay")
             return True, f"Sent via relay {relay_name}", "relay"
         log.warning(f"[RoutePref] Relay failed: {detail}")
 
@@ -566,6 +597,7 @@ def deliver_route_pref(node_id, mode, weights, all_nodes):
             node_id, weights.get("w_latency", 0.5),
             weights.get("w_packet_loss", 0.3), weights.get("w_power", 0.2), mode)
         if ok:
+            _optimistic_update("BLE-direct")
             return True, msg, "BLE-direct"
         log.warning(f"[RoutePref] BLE-direct failed: {msg}")
 
