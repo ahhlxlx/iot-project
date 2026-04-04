@@ -31,7 +31,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 # ─────────────────────────────────────────────
 #  CONFIGURATION
 # ─────────────────────────────────────────────
-GATEWAY_URL      = "http://10.202.64.43:8080"
+GATEWAY_URL      = "http://10.202.64.140:8080"
 DASHBOARD_PORT   = 9000
 POLL_INTERVAL    = 2.0
 HISTORY_MAX      = 100

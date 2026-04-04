@@ -26,6 +26,7 @@ BLE_PKT_TYPE_METRIC      = 0x02
 BLE_PKT_TYPE_PING        = 0x03
 BLE_PKT_TYPE_PONG        = 0x04
 BLE_PKT_TYPE_ROUTE_PREF  = 0x05
+BLE_PKT_TYPE_PROXY       = 0x06  # WiFi-only node relayed over BLE by a dual-proto neighbour
 
 _ROUTE_MODE_RMAP = {0: "balanced", 1: "latency", 2: "cost", 3: "power"}
 _ROUTE_MODE_WMAP = {"balanced": 0, "latency": 1, "cost": 2, "power": 3}
@@ -250,7 +251,10 @@ def ble_advertise_proxy(target_node_id, pkt_type, seq_hop, ts,
     if not ble_active or ble_obj is None:
         return
     try:
-        payload = encode_ble(pkt_type, seq_hop, ts, rssi, lat_ms, loss_pct,
+        # Use BLE_PKT_TYPE_PROXY (not caller's pkt_type) so receivers know
+        # this is a relayed packet and must NOT create a direct link to
+        # target_node_id – the real next hop is this advertising node.
+        payload = encode_ble(BLE_PKT_TYPE_PROXY, seq_hop, ts, rssi, lat_ms, loss_pct,
                              node_id_override=target_node_id)
         ad = bytes([len(payload) + 1, 0xFF]) + payload
         ble_obj.gap_advertise(100_000, adv_data=ad)
