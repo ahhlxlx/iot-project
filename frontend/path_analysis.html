@@ -141,6 +141,7 @@
     padding: 2px 8px; border-radius: 4px;
     background: var(--accent-cyan-dim); color: var(--accent-cyan);
   }
+  .apply-node-tag.ble-only { background: var(--accent-purple-dim); color: var(--accent-purple); }
   .apply-node-tag.sent { background: var(--accent-green-dim); color: var(--accent-green); }
   .apply-node-tag.failed { background: var(--accent-red-dim); color: var(--accent-red); }
   .node-route-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -154,6 +155,13 @@
   .route-mode-badge.power     { border-color: var(--accent-green);  color: var(--accent-green);  }
   .route-mode-badge.balanced  { border-color: var(--accent-blue);   color: var(--accent-blue);   }
   .route-ack-time { font-size: 9px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; }
+  .delivery-badge {
+    font-size: 8px; font-family: 'JetBrains Mono', monospace; font-weight: 700;
+    padding: 1px 5px; border-radius: 3px; text-transform: uppercase;
+  }
+  .delivery-badge.udp     { background: var(--accent-cyan-dim);   color: var(--accent-cyan); }
+  .delivery-badge.relay   { background: var(--accent-orange-dim); color: var(--accent-orange); }
+  .delivery-badge.ble     { background: var(--accent-purple-dim); color: var(--accent-purple); }
 
   .toast-container {
     position: fixed; bottom: 24px; right: 24px; z-index: 1000;
@@ -281,7 +289,7 @@
 <div class="apply-panel" id="applyPanel">
   <div class="apply-info">
     <div class="apply-title" id="applyTitle">Apply <span id="applyModeName">Speed</span> mode to all nodes in path</div>
-    <div class="apply-desc">This sends the weight profile to each node via the gateway. Nodes will immediately recalculate their routing tables and switch WiFi/BLE accordingly.</div>
+    <div class="apply-desc">Sends the weight profile to each node via the gateway. Nodes will immediately recalculate their routing tables. Works for WiFi, BLE, and mixed-protocol nodes.</div>
     <div class="apply-nodes-list" id="applyNodesList"></div>
   </div>
   <button class="apply-btn" id="applyBtn" onclick="applyToNodes()">⚡ Apply to Nodes</button>
@@ -331,7 +339,6 @@ const WEIGHT_PROFILES = {
   balanced:    { w_latency: 0.5, w_packet_loss: 0.3,  w_power: 0.2,  label: 'Balanced',    color: 'var(--accent-blue)'   },
 };
 
-// Human-readable protocol name: BLE → Bluetooth, everything else as-is
 function protoLabel(p) {
   if (!p) return '?';
   if (p === 'BLE' || p === 'BLE-Direct' || p === 'BLE-only') return 'Bluetooth';
@@ -339,11 +346,9 @@ function protoLabel(p) {
   return p;
 }
 
-// Identical to node.py compute_cost
 function computeCost(latency_ms, packet_loss, power_cost, w) {
   return w.w_latency * (latency_ms / 100.0) + w.w_packet_loss * packet_loss + w.w_power * power_cost;
 }
-// Identical to node.py power_cost from RSSI
 function rssiToPowerCost(rssi) {
   return Math.min(1.0, Math.max(0.05, (-rssi - 50) / 40.0));
 }
@@ -352,73 +357,88 @@ function rssiToPowerCost(rssi) {
 const MODE_TO_GATEWAY = { speed: 'latency', reliability: 'cost', power: 'power', balanced: 'balanced' };
 
 let ws = null, latestData = null, knownNodes = new Set(), currentMode = 'speed';
-let lastComputedHops = []; // track for "Apply to Nodes"
+let lastComputedHops = [];
 
 function showToast(msg, type, duration) {
   type = type || 'info'; duration = duration || 3500;
-  const c = document.getElementById('toastContainer');
-  const t = document.createElement('div');
+  var c = document.getElementById('toastContainer');
+  var t = document.createElement('div');
   t.className = 'toast ' + type; t.textContent = msg;
   c.appendChild(t);
   setTimeout(function(){ t.style.opacity = '0'; setTimeout(function(){ t.remove(); }, 300); }, duration);
 }
 
 // ══════════════════════════════════════════════
-// APPLY ROUTE PREFERENCE TO NODES (single backend call)
+// APPLY ROUTE PREFERENCE TO NODES
 // ══════════════════════════════════════════════
 async function applyToNodes() {
-  const src = document.getElementById('srcNode').value;
-  const dst = document.getElementById('dstNode').value;
+  var src = document.getElementById('srcNode').value;
+  var dst = document.getElementById('dstNode').value;
   if (!src || !dst || !lastComputedHops.length) return;
 
-  const gwMode = MODE_TO_GATEWAY[currentMode];
-  const profile = WEIGHT_PROFILES[currentMode];
-  const btn = document.getElementById('applyBtn');
+  var gwMode = MODE_TO_GATEWAY[currentMode];
+  var profile = WEIGHT_PROFILES[currentMode];
+  var btn = document.getElementById('applyBtn');
   btn.className = 'apply-btn sending';
   btn.textContent = 'Sending…';
 
-  showToast('Calculating path and sending ' + profile.label + ' weights to nodes…', 'info');
+  showToast('Sending ' + profile.label + ' weights to all nodes in path…', 'info');
 
   try {
-    const resp = await fetch('/api/path_apply', {
+    var resp = await fetch('/api/path_apply', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ src: src, dst: dst, mode: gwMode })
     });
-    const data = await resp.json();
+    var data = await resp.json();
 
     if (data.error) {
       btn.className = 'apply-btn error';
       btn.textContent = '✕ Failed';
       showToast('Error: ' + data.error, 'error', 5000);
-      setTimeout(function(){ btn.className = 'apply-btn'; btn.textContent = '⚡ Apply ' + profile.label + ' to Nodes'; btn.disabled = false; }, 4000);
+      setTimeout(function(){ resetApplyBtn(); }, 4000);
       return;
     }
 
-    const results = data.node_results || {};
-    const successCount = data.success_count || 0;
-    const failCount = data.fail_count || 0;
+    var results = data.node_results || {};
+    var successCount = data.success_count || 0;
+    var failCount = data.fail_count || 0;
 
-    // Update node tags
-    const tagContainer = document.getElementById('applyNodesList');
+    // Update node tags with delivery method
+    var tagContainer = document.getElementById('applyNodesList');
     tagContainer.innerHTML = '';
-    for (const nodeId in results) {
-      const tag = document.createElement('span');
-      const ok = results[nodeId].ok;
-      tag.className = 'apply-node-tag ' + (ok ? 'sent' : 'failed');
-      tag.textContent = nodeId + ' ' + (ok ? '✓' : '✕');
-      if (!ok) tag.title = results[nodeId].message || 'Failed';
-      tagContainer.appendChild(tag);
+    for (var nodeId in results) {
+      var r = results[nodeId];
+      var row = document.createElement('div');
+      row.className = 'node-route-row';
+
+      var tag = document.createElement('span');
+      tag.className = 'apply-node-tag ' + (r.ok ? 'sent' : 'failed');
+      tag.textContent = nodeId + ' ' + (r.ok ? '✓' : '✕');
+      if (!r.ok) tag.title = r.message || 'Failed';
+      row.appendChild(tag);
+
+      // Show delivery method badge
+      if (r.delivery && r.ok) {
+        var dBadge = document.createElement('span');
+        var dClass = 'udp';
+        if (r.delivery === 'relay' || r.delivery === 'BLE-relay') dClass = 'relay';
+        else if (r.delivery === 'BLE-direct' || r.delivery === 'BLE') dClass = 'ble';
+        dBadge.className = 'delivery-badge ' + dClass;
+        dBadge.textContent = r.delivery;
+        row.appendChild(dBadge);
+      }
+
+      tagContainer.appendChild(row);
     }
 
     if (failCount === 0) {
       btn.className = 'apply-btn success';
       btn.textContent = '✓ Applied to ' + successCount + ' Node' + (successCount > 1 ? 's' : '');
-      showToast('All ' + successCount + ' node' + (successCount > 1 ? 's' : '') + ' updated to ' + profile.label + ' mode. Nodes will recalculate routes immediately.', 'success', 5000);
+      showToast('All ' + successCount + ' node' + (successCount > 1 ? 's' : '') + ' updated to ' + profile.label + ' mode.', 'success', 5000);
     } else if (successCount > 0) {
       btn.className = 'apply-btn error';
       btn.textContent = successCount + ' sent, ' + failCount + ' failed';
-      // Show failure reasons
       var failMsgs = [];
       for (var nid in results) { if (!results[nid].ok) failMsgs.push(nid + ': ' + (results[nid].message || 'unknown')); }
       showToast('Partial: ' + failMsgs.join(', '), 'error', 6000);
@@ -435,28 +455,36 @@ async function applyToNodes() {
     showToast('Could not reach server: ' + e.message, 'error', 5000);
   }
 
-  setTimeout(function(){ btn.className = 'apply-btn'; btn.textContent = '⚡ Apply ' + profile.label + ' to Nodes'; btn.disabled = false; }, 4000);
+  setTimeout(function(){ resetApplyBtn(); }, 4000);
+}
+
+function resetApplyBtn() {
+  var profile = WEIGHT_PROFILES[currentMode];
+  var btn = document.getElementById('applyBtn');
+  btn.className = 'apply-btn';
+  btn.textContent = '⚡ Apply ' + profile.label + ' to Nodes';
+  btn.disabled = false;
 }
 
 function setMode(mode) {
   currentMode = mode;
-  document.querySelectorAll('.mode-btn').forEach(b => {
+  document.querySelectorAll('.mode-btn').forEach(function(b) {
     b.className = 'mode-btn';
     if (b.dataset.mode === mode) b.classList.add('active-' + mode);
   });
-  const p = WEIGHT_PROFILES[mode];
-  const el = document.getElementById('hopModeLabel');
+  var p = WEIGHT_PROFILES[mode];
+  var el = document.getElementById('hopModeLabel');
   el.textContent = p.label; el.style.color = p.color;
   analyzePath();
 }
 
 function connectWS() {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  var proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(proto + '://' + location.host + '/ws');
-  ws.onopen = () => { document.getElementById('gwStatus').innerHTML = '<span class="status-dot online"></span> Connected'; };
-  ws.onmessage = (event) => {
+  ws.onopen = function() { document.getElementById('gwStatus').innerHTML = '<span class="status-dot online"></span> Connected'; };
+  ws.onmessage = function(event) {
     try {
-      const data = JSON.parse(event.data);
+      var data = JSON.parse(event.data);
       if (data.type === 'update') {
         latestData = data; updateNodeSelectors(data); analyzePath();
         document.getElementById('lastUpdate').textContent = data.timestamp || '—';
@@ -466,92 +494,84 @@ function connectWS() {
       }
     } catch(e) { console.error('WS parse error', e); }
   };
-  ws.onclose = () => { document.getElementById('gwStatus').innerHTML = '<span class="status-dot offline"></span> Disconnected'; setTimeout(connectWS, 3000); };
-  ws.onerror = () => ws.close();
+  ws.onclose = function() { document.getElementById('gwStatus').innerHTML = '<span class="status-dot offline"></span> Disconnected'; setTimeout(connectWS, 3000); };
+  ws.onerror = function() { ws.close(); };
 }
 
 function updateNodeSelectors(data) {
-  const nodes = data.health_matrix?.nodes || {};
-  const ids = Object.keys(nodes).sort();
-  const allIds = ['GATEWAY', ...ids];
-  const newSet = new Set(allIds);
-  const listChanged = !setsEqual(newSet, knownNodes);
+  var nodes = data.health_matrix && data.health_matrix.nodes ? data.health_matrix.nodes : {};
+  var ids = Object.keys(nodes).sort();
+  var allIds = ['GATEWAY'].concat(ids);
+  var newSet = new Set(allIds);
+  var listChanged = !setsEqual(newSet, knownNodes);
   knownNodes = newSet;
 
-  ['srcNode','dstNode'].forEach(selId => {
-    const sel = document.getElementById(selId);
-    const val = sel.value;
+  ['srcNode','dstNode'].forEach(function(selId) {
+    var sel = document.getElementById(selId);
+    var val = sel.value;
 
     if (listChanged) {
-      // Rebuild options fully when the node list itself changes
       sel.innerHTML = '<option value="">Select node…</option>';
-      allIds.forEach(id => {
-        const opt = document.createElement('option'); opt.value = id;
-        const n = nodes[id];
-        const isOffline = id !== 'GATEWAY' && n?.status && n.status !== 'ONLINE' && n.status !== 'DEGRADED';
+      allIds.forEach(function(id) {
+        var opt = document.createElement('option'); opt.value = id;
+        var n = nodes[id];
+        var isOffline = id !== 'GATEWAY' && n && n.status && n.status !== 'ONLINE' && n.status !== 'DEGRADED';
         opt.textContent = id === 'GATEWAY' ? 'GATEWAY (Raspberry Pi)'
-          : id + '  [' + protoLabel(n?.protocol || '') + ' · ' + (n?.status || '?') + ']';
+          : id + '  [' + protoLabel(n ? n.protocol || '' : '') + ' · ' + (n ? n.status || '?' : '?') + ']';
         if (isOffline) {
           opt.disabled = true;
-          opt.style.color = '#5a6577';  // muted text so it's clearly unavailable
+          opt.style.color = '#5a6577';
         }
         sel.appendChild(opt);
       });
       sel.value = val;
-      // If the previously selected node is now offline, clear it
       if (sel.value) {
-        const selOpt = Array.from(sel.options).find(o => o.value === sel.value);
-        if (selOpt?.disabled) { sel.value = ''; }
+        var selOpt = Array.from(sel.options).find(function(o) { return o.value === sel.value; });
+        if (selOpt && selOpt.disabled) { sel.value = ''; }
       }
       sel.value = val;
     } else {
-  // Just refresh option text so status/protocol changes are visible
-  Array.from(sel.options).forEach(opt => {
-    const id = opt.value;
-    if (!id || id === 'GATEWAY') return;
-    const n = nodes[id];
-    if (n) {
-      opt.textContent = id + '  [' + protoLabel(n.protocol || '') + ' · ' + (n.status || '?') + ']';
-      const isOffline = n.status !== 'ONLINE' && n.status !== 'DEGRADED';
-      opt.disabled = isOffline;
-      opt.style.color = isOffline ? '#5a6577' : '';
+      Array.from(sel.options).forEach(function(opt) {
+        var id = opt.value;
+        if (!id || id === 'GATEWAY') return;
+        var n = nodes[id];
+        if (n) {
+          opt.textContent = id + '  [' + protoLabel(n.protocol || '') + ' · ' + (n.status || '?') + ']';
+          var isOffline = n.status !== 'ONLINE' && n.status !== 'DEGRADED';
+          opt.disabled = isOffline;
+          opt.style.color = isOffline ? '#5a6577' : '';
+        }
+      });
+      if (sel.value) {
+        var selOpt = Array.from(sel.options).find(function(o) { return o.value === sel.value; });
+        if (selOpt && selOpt.disabled) { sel.value = ''; analyzePath(); }
+      }
     }
   });
-  // Clear selection if selected node went offline
-  if (sel.value) {
-    const selOpt = Array.from(sel.options).find(o => o.value === sel.value);
-    if (selOpt?.disabled) { sel.value = ''; analyzePath(); }
-  }
 }
-  });
-}
-function setsEqual(a, b) { if (a.size !== b.size) return false; for (const i of a) if (!b.has(i)) return false; return true; }
+function setsEqual(a, b) { if (a.size !== b.size) return false; for (var i of a) if (!b.has(i)) return false; return true; }
 
 // ══════════════════════════════════════════════
-// CORE: Recalculate WiFi vs BLE cost at each hop using selected weights
+// CORE: Recalculate WiFi vs BLE cost at each hop
 // ══════════════════════════════════════════════
 function recalcHop(from, to, fromNode, routeEntry, weights) {
-  const m = fromNode.metrics || {};
-  const wLat = routeEntry.wifi_lat || m.wifi_avg_latency_ms || 0;
-  // Use ?? not || so that 0.0 (genuine zero packet loss) is not treated as falsy
-  const wLoss = m.wifi_packet_loss ?? routeEntry.packet_loss ?? 0;
-  // Only fall back to fromNode.rssi when the node is known to be on WiFi;
-  // otherwise a BLE-only node's RSSI would be mistaken for WiFi RSSI and
-  // "WiFi" would appear available when it is actually down.
-  const isNodeBle = fromNode.protocol && fromNode.protocol.includes('BLE');
-  const wRssi = (m.wifi_rssi != null) ? m.wifi_rssi : (isNodeBle ? -99 : (fromNode.rssi || -99));
-  const wPow = m.wifi_power_cost || rssiToPowerCost(wRssi);
-  const bLat = routeEntry.ble_lat || m.ble_avg_latency_ms || 0;
-  const bLoss = m.ble_packet_loss ?? 0;
-  const bRssi = (m.ble_rssi != null) ? m.ble_rssi : (isNodeBle ? (fromNode.rssi || -99) : -99);
-  const bPow = m.ble_power_cost || rssiToPowerCost(bRssi);
-  const wA = wRssi > -99 || wLat > 0, bA = bRssi > -99 || bLat > 0;
-  const wC = wA ? computeCost(wLat, wLoss, wPow, weights) : 9999;
-  const bC = bA ? computeCost(bLat, bLoss, bPow, weights) : 9999;
-  const isWifi = wC <= bC;
-  const nodeDecided = routeEntry.best_protocol || '?';
+  var m = fromNode.metrics || {};
+  var wLat = routeEntry.wifi_lat || m.wifi_avg_latency_ms || 0;
+  var wLoss = m.wifi_packet_loss != null ? m.wifi_packet_loss : (routeEntry.packet_loss != null ? routeEntry.packet_loss : 0);
+  var isNodeBle = fromNode.protocol && fromNode.protocol.includes('BLE');
+  var wRssi = (m.wifi_rssi != null) ? m.wifi_rssi : (isNodeBle ? -99 : (fromNode.rssi || -99));
+  var wPow = m.wifi_power_cost || rssiToPowerCost(wRssi);
+  var bLat = routeEntry.ble_lat || m.ble_avg_latency_ms || 0;
+  var bLoss = m.ble_packet_loss != null ? m.ble_packet_loss : 0;
+  var bRssi = (m.ble_rssi != null) ? m.ble_rssi : (isNodeBle ? (fromNode.rssi || -99) : -99);
+  var bPow = m.ble_power_cost || rssiToPowerCost(bRssi);
+  var wA = wRssi > -99 || wLat > 0, bA = bRssi > -99 || bLat > 0;
+  var wC = wA ? computeCost(wLat, wLoss, wPow, weights) : 9999;
+  var bC = bA ? computeCost(bLat, bLoss, bPow, weights) : 9999;
+  var isWifi = wC <= bC;
+  var nodeDecided = routeEntry.best_protocol || '?';
   return {
-    from, to, protocol: isWifi ? 'WiFi' : 'BLE', node_decided: nodeDecided,
+    from: from, to: to, protocol: isWifi ? 'WiFi' : 'BLE', node_decided: nodeDecided,
     changed: (isWifi ? 'WiFi' : 'BLE') !== nodeDecided,
     cost: isWifi ? wC : bC, wifi_cost: wA ? wC : null, ble_cost: bA ? bC : null,
     latency: isWifi ? wLat : bLat, wifi_latency: wLat, ble_latency: bLat,
@@ -561,28 +581,25 @@ function recalcHop(from, to, fromNode, routeEntry, weights) {
 }
 
 function buildEndpointHop(from, to, nodeData, weights) {
-  const m = nodeData.metrics || {};
-  const proto = nodeData.protocol || 'WiFi';
-  const wLat = m.wifi_avg_latency_ms || nodeData.avg_latency_ms || 0;
-  const wLoss = m.wifi_packet_loss ?? nodeData.packet_loss ?? 0;
-  // Only fall back to nodeData.rssi for WiFi if the node isn't BLE-only;
-  // prevents a BLE RSSI from being treated as WiFi RSSI.
-  const isEndpointBle = nodeData.protocol && nodeData.protocol.includes('BLE');
-  const wRssi = (m.wifi_rssi != null) ? m.wifi_rssi : (isEndpointBle ? -99 : (nodeData.rssi || -99));
-  const wPow = m.wifi_power_cost || rssiToPowerCost(wRssi);
-  const bLat = m.ble_avg_latency_ms || 0;
-  const bLoss = m.ble_packet_loss ?? 0;
-  const bRssi = (m.ble_rssi != null) ? m.ble_rssi : (isEndpointBle ? (nodeData.rssi || -99) : -99);
-  const bPow = m.ble_power_cost || rssiToPowerCost(bRssi);
-  const wA = wRssi > -99 || wLat > 0, bA = bRssi > -99 || bLat > 0;
-  const wC = wA ? computeCost(wLat, wLoss, wPow, weights) : 9999;
-  const bC = bA ? computeCost(bLat, bLoss, bPow, weights) : 9999;
-  const isWifi = wC <= bC;
-  const rt = nodeData.routing_table || {};
-  const rtEntry = rt[to];
-  const nd = rtEntry?.best_protocol || (proto.includes('BLE') ? 'BLE' : 'WiFi');
+  var m = nodeData.metrics || {};
+  var wLat = m.wifi_avg_latency_ms || nodeData.avg_latency_ms || 0;
+  var wLoss = m.wifi_packet_loss != null ? m.wifi_packet_loss : (nodeData.packet_loss != null ? nodeData.packet_loss : 0);
+  var isEndpointBle = nodeData.protocol && nodeData.protocol.includes('BLE');
+  var wRssi = (m.wifi_rssi != null) ? m.wifi_rssi : (isEndpointBle ? -99 : (nodeData.rssi || -99));
+  var wPow = m.wifi_power_cost || rssiToPowerCost(wRssi);
+  var bLat = m.ble_avg_latency_ms || 0;
+  var bLoss = m.ble_packet_loss != null ? m.ble_packet_loss : 0;
+  var bRssi = (m.ble_rssi != null) ? m.ble_rssi : (isEndpointBle ? (nodeData.rssi || -99) : -99);
+  var bPow = m.ble_power_cost || rssiToPowerCost(bRssi);
+  var wA = wRssi > -99 || wLat > 0, bA = bRssi > -99 || bLat > 0;
+  var wC = wA ? computeCost(wLat, wLoss, wPow, weights) : 9999;
+  var bC = bA ? computeCost(bLat, bLoss, bPow, weights) : 9999;
+  var isWifi = wC <= bC;
+  var rt = nodeData.routing_table || {};
+  var rtEntry = rt[to];
+  var nd = rtEntry ? (rtEntry.best_protocol || '?') : (isEndpointBle ? 'BLE' : 'WiFi');
   return {
-    from, to, protocol: isWifi ? 'WiFi' : 'BLE', node_decided: nd,
+    from: from, to: to, protocol: isWifi ? 'WiFi' : 'BLE', node_decided: nd,
     changed: (isWifi ? 'WiFi' : 'BLE') !== nd,
     cost: isWifi ? wC : bC, wifi_cost: wA ? wC : null, ble_cost: bA ? bC : null,
     latency: isWifi ? wLat : bLat, wifi_latency: wLat, ble_latency: bLat,
@@ -593,42 +610,30 @@ function buildEndpointHop(from, to, nodeData, weights) {
 
 function tracePath(src, dst, nodes, weights) {
   if (src === dst) return [];
-  const hops = [], visited = new Set();
-  let current = src;
+  var hops = [], visited = new Set();
+  var current = src;
   while (current !== dst && hops.length < 10) {
     if (visited.has(current)) break;
     visited.add(current);
-    // Current is GATEWAY → go directly to destination
     if (current === 'GATEWAY') {
-      const nd = nodes[dst]; if (nd) hops.push(buildEndpointHop('GATEWAY', dst, nd, weights)); break;
+      var nd = nodes[dst]; if (nd) hops.push(buildEndpointHop('GATEWAY', dst, nd, weights)); break;
     }
-    const fn = nodes[current]; if (!fn) break;
-    // Destination is GATEWAY → direct link
+    var fn = nodes[current]; if (!fn) break;
     if (dst === 'GATEWAY') { hops.push(buildEndpointHop(current, 'GATEWAY', fn, weights)); break; }
-    // Check routing table
-    const rt = fn.routing_table || {}, re = rt[dst];
+    var rt = fn.routing_table || {}, re = rt[dst];
     if (re) {
-      const nh = re.next_hop || dst;
+      var nh = re.next_hop || dst;
       hops.push(recalcHop(current, nh, fn, re, weights));
       if (nh === dst) break; current = nh;
     } else {
-      // No route in table — check if direct neighbour
-      const nb = fn.neighbours || [];
-      if (nb.includes(dst)) {
-        hops.push(buildEndpointHop(current, dst, fn, weights));
-        break;
-      }
-      // No direct route → try routing through GATEWAY
-      // Both nodes are in health matrix = gateway can reach both
-      const dstNode = nodes[dst];
+      var nb = fn.neighbours || [];
+      if (nb.includes(dst)) { hops.push(buildEndpointHop(current, dst, fn, weights)); break; }
+      var dstNode = nodes[dst];
       if (dstNode && !visited.has('GATEWAY')) {
-        // Hop 1: current → GATEWAY (using current node's metrics)
         hops.push(buildEndpointHop(current, 'GATEWAY', fn, weights));
-        // Hop 2: GATEWAY → destination (using destination node's metrics)
         hops.push(buildEndpointHop('GATEWAY', dst, dstNode, weights));
         break;
       }
-      // Truly unreachable
       hops.push({ from: current, to: dst, protocol: '?', unreachable: true, node_decided: '?', changed: false, wifi_cost: null, ble_cost: null, cost: 0, latency: 0, power_cost: 0, rssi: -99, packet_loss: 1.0 });
       break;
     }
@@ -637,13 +642,13 @@ function tracePath(src, dst, nodes, weights) {
 }
 
 function analyzePath() {
-  const src = document.getElementById('srcNode').value;
-  const dst = document.getElementById('dstNode').value;
+  var src = document.getElementById('srcNode').value;
+  var dst = document.getElementById('dstNode').value;
   if (!src || !dst || !latestData) { lastComputedHops = []; updateApplyPanel(); renderEmptyState(); return; }
   if (src === dst) { lastComputedHops = []; updateApplyPanel(); renderSameNodeState(); return; }
-  const nodes = latestData.health_matrix?.nodes || {};
-  const weights = WEIGHT_PROFILES[currentMode];
-  const hops = tracePath(src, dst, nodes, weights);
+  var nodes = latestData.health_matrix && latestData.health_matrix.nodes ? latestData.health_matrix.nodes : {};
+  var weights = WEIGHT_PROFILES[currentMode];
+  var hops = tracePath(src, dst, nodes, weights);
   lastComputedHops = hops;
   if (hops.length === 0) { updateApplyPanel(); renderNoRouteState(src, dst); return; }
   updateApplyPanel();
@@ -651,10 +656,10 @@ function analyzePath() {
 }
 
 function updateApplyPanel() {
-  const panel = document.getElementById('applyPanel');
+  var panel = document.getElementById('applyPanel');
   if (!lastComputedHops.length) { panel.style.display = 'none'; return; }
 
-  const nodeIds = new Set();
+  var nodeIds = new Set();
   lastComputedHops.forEach(function(h) {
     if (h.from !== 'GATEWAY') nodeIds.add(h.from);
     if (h.to !== 'GATEWAY') nodeIds.add(h.to);
@@ -663,46 +668,42 @@ function updateApplyPanel() {
   if (nodeIds.size === 0) { panel.style.display = 'none'; return; }
 
   panel.style.display = 'flex';
-  const profile = WEIGHT_PROFILES[currentMode];
+  var profile = WEIGHT_PROFILES[currentMode];
   document.getElementById('applyModeName').textContent = profile.label;
 
-  // Show node tags with current route mode and last ACK time
-  const nodes = latestData?.health_matrix?.nodes || {};
-  const tagContainer = document.getElementById('applyNodesList');
+  var nodes = latestData && latestData.health_matrix && latestData.health_matrix.nodes ? latestData.health_matrix.nodes : {};
+  var tagContainer = document.getElementById('applyNodesList');
   tagContainer.innerHTML = '';
-  let bleOnlyCount = 0;
 
-  const GATEWAY_TO_LABEL = { latency: 'speed', cost: 'reliability', power: 'power', balanced: 'balanced' };
+  var GATEWAY_TO_LABEL = { latency: 'speed', cost: 'reliability', power: 'power', balanced: 'balanced' };
 
-  for (const nodeId of nodeIds) {
-    const nd = nodes[nodeId];
-    const ip = nd?.sender_ip || nd?.wifi_sender_ip || '';
-    const isBleOnly = !ip || ip === 'BLE-direct' || ip === 'BLE-only';
-    if (isBleOnly) bleOnlyCount++;
+  for (var nodeId of nodeIds) {
+    var nd = nodes[nodeId];
+    var ip = nd ? (nd.sender_ip || nd.wifi_sender_ip || '') : '';
+    var isBleOnly = !ip || ip === 'BLE-direct' || ip === 'BLE-only';
 
-    const row = document.createElement('div');
+    var row = document.createElement('div');
     row.className = 'node-route-row';
 
     // Node tag
-    const tag = document.createElement('span');
+    var tag = document.createElement('span');
     tag.className = 'apply-node-tag' + (isBleOnly ? ' ble-only' : '');
-    tag.textContent = nodeId + (isBleOnly ? ' (BLE-only)' : '');
-    if (isBleOnly) tag.title = 'No WiFi IP — ROUTE_PREF cannot be delivered via UDP';
+    tag.textContent = nodeId + (isBleOnly ? ' (BLE)' : '');
     row.appendChild(tag);
 
     // Current confirmed route mode badge
-    if (nd?.route_mode) {
-      const modeKey = GATEWAY_TO_LABEL[nd.route_mode] || nd.route_mode;
-      const badge = document.createElement('span');
+    if (nd && nd.route_mode) {
+      var modeKey = GATEWAY_TO_LABEL[nd.route_mode] || nd.route_mode;
+      var badge = document.createElement('span');
       badge.className = 'route-mode-badge ' + modeKey;
       badge.textContent = 'now: ' + nd.route_mode;
       row.appendChild(badge);
     }
 
     // Last ACK time
-    if (nd?.route_ack_time) {
-      const secs = Math.round(Date.now() / 1000 - nd.route_ack_time);
-      const ackEl = document.createElement('span');
+    if (nd && nd.route_ack_time) {
+      var secs = Math.round(Date.now() / 1000 - nd.route_ack_time);
+      var ackEl = document.createElement('span');
       ackEl.className = 'route-ack-time';
       ackEl.textContent = '✓ confirmed ' + (secs < 60 ? secs + 's ago' : Math.round(secs / 60) + 'm ago');
       row.appendChild(ackEl);
@@ -711,23 +712,22 @@ function updateApplyPanel() {
     tagContainer.appendChild(row);
   }
 
-  // Button state
-  const btn = document.getElementById('applyBtn');
-  if (bleOnlyCount === nodeIds.size) {
-    btn.className = 'apply-btn error'; btn.textContent = '✕ All nodes are BLE-only'; btn.disabled = true;
-  } else {
-    btn.className = 'apply-btn'; btn.textContent = '⚡ Apply ' + profile.label + ' to Nodes'; btn.disabled = false;
-  }
+  // Button — always enabled. The backend handles WiFi, BLE relay, and BLE direct.
+  var btn = document.getElementById('applyBtn');
+  btn.className = 'apply-btn';
+  btn.textContent = '⚡ Apply ' + profile.label + ' to Nodes';
+  btn.disabled = false;
 }
 
 function renderResultBanner(hops) {
-  const banner = document.getElementById('resultBanner'); banner.style.display = 'flex';
-  let tW = 0, tB = 0, wA = 0, bA = 0;
-  hops.forEach(h => { if (h.wifi_cost != null && h.wifi_cost < 9999) { tW += h.wifi_cost; wA++; } if (h.ble_cost != null && h.ble_cost < 9999) { tB += h.ble_cost; bA++; } });
-  const wC = hops.filter(h => h.protocol === 'WiFi').length, bC = hops.filter(h => h.protocol === 'BLE').length;
-  const chg = hops.filter(h => h.changed).length;
-  const win = wC >= bC ? 'WiFi' : 'Bluetooth';
-  let chgHTML = chg > 0 ? '<span style="color:var(--accent-orange);font-size:12px;font-weight:600;">⚠ ' + chg + ' hop' + (chg>1?'s':'') + ' differ from node current decision</span>' : '';
+  var banner = document.getElementById('resultBanner'); banner.style.display = 'flex';
+  var tW = 0, tB = 0, wA = 0, bA = 0;
+  hops.forEach(function(h) { if (h.wifi_cost != null && h.wifi_cost < 9999) { tW += h.wifi_cost; wA++; } if (h.ble_cost != null && h.ble_cost < 9999) { tB += h.ble_cost; bA++; } });
+  var wC = hops.filter(function(h){ return h.protocol === 'WiFi'; }).length;
+  var bC = hops.filter(function(h){ return h.protocol === 'BLE'; }).length;
+  var chg = hops.filter(function(h){ return h.changed; }).length;
+  var win = wC >= bC ? 'WiFi' : 'Bluetooth';
+  var chgHTML = chg > 0 ? '<span style="color:var(--accent-orange);font-size:12px;font-weight:600;">⚠ ' + chg + ' hop' + (chg>1?'s':'') + ' differ from node current decision</span>' : '';
   banner.innerHTML = '<div><div class="rb-label">Recommended</div><span class="rb-winner ' + (win==='WiFi'?'rb-wifi':'rb-ble') + '">' + win + ' wins ' + (win==='WiFi'?wC:bC) + '/' + hops.length + ' hops</span></div>'
     + '<div><div class="rb-label">WiFi Path Cost</div><div class="rb-value" style="color:var(--accent-cyan)">' + (wA ? tW.toFixed(4) : 'N/A') + '</div></div>'
     + '<div class="rb-vs">vs</div>'
@@ -737,35 +737,35 @@ function renderResultBanner(hops) {
 }
 
 function renderPathViz(hops) {
-  const svg = document.getElementById('pathSvg');
-  const w = svg.clientWidth || 800, h = 160;
+  var svg = document.getElementById('pathSvg');
+  var w = svg.clientWidth || 800, h = 160;
   svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
-  const pn = [hops[0].from]; hops.forEach(hop => { if (!pn.includes(hop.to)) pn.push(hop.to); });
-  const pad = 80, sp = (w - pad*2) / Math.max(pn.length - 1, 1), cy = 70;
-  let s = '<defs><filter id="glow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>'
+  var pn = [hops[0].from]; hops.forEach(function(hop) { if (!pn.includes(hop.to)) pn.push(hop.to); });
+  var pad = 80, sp = (w - pad*2) / Math.max(pn.length - 1, 1), cy = 70;
+  var s = '<defs><filter id="glow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>'
     + '<marker id="ac" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto"><path d="M0,0 L10,3 L0,6" fill="#06b6d4" opacity="0.8"/></marker>'
     + '<marker id="ap" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto"><path d="M0,0 L10,3 L0,6" fill="#a78bfa" opacity="0.8"/></marker>'
     + '<marker id="ar" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto"><path d="M0,0 L10,3 L0,6" fill="#ef4444" opacity="0.8"/></marker></defs>';
-  const pos = {}; pn.forEach((id,i) => { pos[id] = { x: pad + i*sp, y: cy }; });
-  hops.forEach(hop => {
-    const fp = pos[hop.from], tp = pos[hop.to]; if (!fp || !tp) return;
-    const ble = hop.protocol === 'BLE', unr = hop.unreachable;
-    const st = unr ? '#ef4444' : (ble ? '#a78bfa' : '#06b6d4');
-    const mk = unr ? 'url(#ar)' : (ble ? 'url(#ap)' : 'url(#ac)');
-    const da = unr ? '6,4' : '';
-    const r = 24, dx = tp.x - fp.x, ux = dx / Math.abs(dx);  // match circle radius
+  var pos = {}; pn.forEach(function(id,i) { pos[id] = { x: pad + i*sp, y: cy }; });
+  hops.forEach(function(hop) {
+    var fp = pos[hop.from], tp = pos[hop.to]; if (!fp || !tp) return;
+    var ble = hop.protocol === 'BLE', unr = hop.unreachable;
+    var st = unr ? '#ef4444' : (ble ? '#a78bfa' : '#06b6d4');
+    var mk = unr ? 'url(#ar)' : (ble ? 'url(#ap)' : 'url(#ac)');
+    var da = unr ? '6,4' : '';
+    var r = 24, dx = tp.x - fp.x, ux = dx / Math.abs(dx);
     s += '<line x1="' + (fp.x+ux*r) + '" y1="' + cy + '" x2="' + (tp.x-ux*r) + '" y2="' + cy + '" stroke="' + st + '" stroke-width="2.5" stroke-dasharray="' + da + '" opacity="0.8" marker-end="' + mk + '"/>';
-    const mx = (fp.x+tp.x)/2, ll = hop.latency > 0 ? hop.latency.toFixed(1)+'ms' : '—', cl = hop.cost > 0 && hop.cost < 9999 ? hop.cost.toFixed(4) : '—';
-    const cm = hop.changed ? ' ↻' : '';
+    var mx = (fp.x+tp.x)/2, ll = hop.latency > 0 ? hop.latency.toFixed(1)+'ms' : '—', cl = hop.cost > 0 && hop.cost < 9999 ? hop.cost.toFixed(4) : '—';
+    var cm = hop.changed ? ' ↻' : '';
     s += '<rect x="'+(mx-48)+'" y="'+(cy-40)+'" width="96" height="34" rx="6" fill="#111827" stroke="'+st+'" stroke-width="1" opacity="0.9"/>';
     s += '<text x="'+mx+'" y="'+(cy-27)+'" text-anchor="middle" fill="'+st+'" font-family="JetBrains Mono" font-size="9" font-weight="600">'+protoLabel(hop.protocol)+cm+' · '+ll+'</text>';
     s += '<text x="'+mx+'" y="'+(cy-15)+'" text-anchor="middle" fill="#5a6577" font-family="JetBrains Mono" font-size="8">cost: '+cl+'</text>';
   });
-  const nodes = latestData.health_matrix?.nodes || {};
-  pn.forEach((id,i) => {
-    const p = pos[id], isGW = id === 'GATEWAY', isF = i===0, isL = i===pn.length-1;
-    const nd = nodes[id], st = isGW ? 'ONLINE' : (nd?.status||'OFFLINE');
-    const col = isGW ? '#22c55e' : (st==='ONLINE' ? '#06b6d4' : st==='DEGRADED' ? '#f59e0b' : '#ef4444');
+  var nodes = latestData.health_matrix && latestData.health_matrix.nodes ? latestData.health_matrix.nodes : {};
+  pn.forEach(function(id,i) {
+    var p = pos[id], isGW = id === 'GATEWAY', isF = i===0, isL = i===pn.length-1;
+    var nd = nodes[id], st = isGW ? 'ONLINE' : (nd ? nd.status || 'OFFLINE' : 'OFFLINE');
+    var col = isGW ? '#22c55e' : (st==='ONLINE' ? '#06b6d4' : st==='DEGRADED' ? '#f59e0b' : '#ef4444');
     s += '<circle cx="'+p.x+'" cy="'+cy+'" r="24" fill="#111827" stroke="'+col+'" stroke-width="'+((isF||isL)?3:2)+'" filter="url(#glow)"/>';
     s += '<text x="'+p.x+'" y="'+(cy-2)+'" text-anchor="middle" dominant-baseline="middle" fill="'+col+'" font-family="JetBrains Mono" font-size="'+(isGW?11:9)+'" font-weight="700">'+(isGW?'GW':id)+'</text>';
     s += '<text x="'+p.x+'" y="'+(cy+42)+'" text-anchor="middle" fill="'+(isF?'#22c55e':isL?'#f59e0b':'#5a6577')+'" font-family="JetBrains Mono" font-size="9" font-weight="'+((isF||isL)?600:400)+'">'+(isF?'SOURCE':isL?'DEST':'')+'</text>';
@@ -775,40 +775,40 @@ function renderPathViz(hops) {
 }
 
 function renderSummary(hops) {
-  const tL = hops.reduce((s,h)=>s+(h.latency||0),0), tC = hops.reduce((s,h)=>s+(h.cost<9999?h.cost:0),0);
-  const aP = hops.length > 0 ? hops.reduce((s,h)=>s+(h.power_cost||0),0)/hops.length : 0;
-  const wC = hops.filter(h=>h.protocol==='WiFi').length, bC = hops.filter(h=>h.protocol==='BLE').length;
-  const dp = wC >= bC ? 'WiFi' : 'Bluetooth', ur = hops.some(h=>h.unreachable), ml = Math.max(...hops.map(h=>h.packet_loss||0));
+  var tL = hops.reduce(function(s,h){return s+(h.latency||0);},0), tC = hops.reduce(function(s,h){return s+(h.cost<9999?h.cost:0);},0);
+  var aP = hops.length > 0 ? hops.reduce(function(s,h){return s+(h.power_cost||0);},0)/hops.length : 0;
+  var wC = hops.filter(function(h){return h.protocol==='WiFi';}).length, bC = hops.filter(function(h){return h.protocol==='BLE';}).length;
+  var dp = wC >= bC ? 'WiFi' : 'Bluetooth', ur = hops.some(function(h){return h.unreachable;}), ml = Math.max.apply(null, hops.map(function(h){return h.packet_loss||0;}));
   document.getElementById('sumHops').textContent = hops.length;
-  const latEl = document.getElementById('sumLatency'); latEl.textContent = tL.toFixed(1)+' ms';
+  var latEl = document.getElementById('sumLatency'); latEl.textContent = tL.toFixed(1)+' ms';
   latEl.className = 'value '+(tL>200?'val-red':tL>80?'val-orange':'val-green');
   document.getElementById('sumCost').textContent = tC.toFixed(4);
   document.getElementById('sumPower').textContent = aP.toFixed(3);
-  const prEl = document.getElementById('sumProto'); prEl.textContent = dp;
-  prEl.className = 'value '+(dp==='WiFi'?'val-cyan':'val-purple');  // Bluetooth → purple
+  var prEl = document.getElementById('sumProto'); prEl.textContent = dp;
+  prEl.className = 'value '+(dp==='WiFi'?'val-cyan':'val-purple');
   document.getElementById('sumProtoDetail').textContent = 'WiFi: '+wC+' hop'+(wC!==1?'s':'')+', Bluetooth: '+bC+' hop'+(bC!==1?'s':'');
-  const stEl = document.getElementById('sumStatus'), sdEl = document.getElementById('sumStatusDetail');
+  var stEl = document.getElementById('sumStatus'), sdEl = document.getElementById('sumStatusDetail');
   if (ur) { stEl.textContent='NO ROUTE'; stEl.className='value val-red'; sdEl.textContent='Path partially unreachable'; }
   else if (ml>0.2) { stEl.textContent='DEGRADED'; stEl.className='value val-orange'; sdEl.textContent='Max loss: '+(ml*100).toFixed(1)+'%'; }
   else { stEl.textContent='HEALTHY'; stEl.className='value val-green'; sdEl.textContent='All hops reachable'; }
 }
 
 function renderHopTable(hops) {
-  const tb = document.getElementById('hopTableBody'), tf = document.getElementById('hopTableFoot');
+  var tb = document.getElementById('hopTableBody'), tf = document.getElementById('hopTableFoot');
   if (!hops.length) { tb.innerHTML = '<tr><td colspan="11"><div class="empty-state"><div class="icon">⬡</div><div class="title">No path</div></div></td></tr>'; tf.style.display='none'; return; }
-  let tL=0,tC=0,tP=0,wL=0;
-  tb.innerHTML = hops.map((h,i) => {
+  var tL=0,tC=0,tP=0,wL=0;
+  tb.innerHTML = hops.map(function(h,i) {
     tL += h.latency||0; tC += (h.cost<9999?h.cost:0); tP += h.power_cost||0; wL = Math.max(wL, h.packet_loss||0);
-    let pb;
+    var pb;
     if (h.unreachable) pb = '<span class="proto-badge" style="background:var(--accent-red-dim);color:var(--accent-red);">NO ROUTE</span>';
     else { pb = '<span class="proto-badge proto-'+(h.protocol==='BLE'?'ble':'wifi')+'">'+protoLabel(h.protocol)+'</span>'; if (h.changed) pb += '<span class="changed-indicator">was '+protoLabel(h.node_decided)+'</span>'; }
-    const lc = h.latency>150?'var(--accent-red)':h.latency>60?'var(--accent-orange)':'var(--accent-green)';
-    const pp = Math.min(100,Math.round((h.power_cost||0)*100));
-    const pc = pp>70?'var(--accent-red)':pp>40?'var(--accent-orange)':'var(--accent-green)';
-    const wcs = h.wifi_cost!=null?h.wifi_cost.toFixed(4):'—', bcs = h.ble_cost!=null?h.ble_cost.toFixed(4):'—';
-    const ww = h.wifi_cost!=null&&h.ble_cost!=null&&h.wifi_cost<=h.ble_cost;
-    const bw = h.wifi_cost!=null&&h.ble_cost!=null&&h.ble_cost<h.wifi_cost;
-    const lcc = h.packet_loss>0.1?'var(--accent-red)':h.packet_loss>0.03?'var(--accent-orange)':'var(--accent-green)';
+    var lc = h.latency>150?'var(--accent-red)':h.latency>60?'var(--accent-orange)':'var(--accent-green)';
+    var pp = Math.min(100,Math.round((h.power_cost||0)*100));
+    var pc = pp>70?'var(--accent-red)':pp>40?'var(--accent-orange)':'var(--accent-green)';
+    var wcs = h.wifi_cost!=null?h.wifi_cost.toFixed(4):'—', bcs = h.ble_cost!=null?h.ble_cost.toFixed(4):'—';
+    var ww = h.wifi_cost!=null&&h.ble_cost!=null&&h.wifi_cost<=h.ble_cost;
+    var bw = h.wifi_cost!=null&&h.ble_cost!=null&&h.ble_cost<h.wifi_cost;
+    var lcc = h.packet_loss>0.1?'var(--accent-red)':h.packet_loss>0.03?'var(--accent-orange)':'var(--accent-green)';
     return '<tr><td class="hop-num">#'+(i+1)+'</td><td class="node-name">'+h.from+'</td><td class="node-name">'+h.to+'</td><td>'+pb+'</td>'
       +'<td class="cost-cell"><span class="wifi-cost" style="'+(ww?'font-weight:700;':'opacity:0.5;')+'">'+wcs+(ww?' ✓':'')+'</span></td>'
       +'<td class="cost-cell"><span class="ble-cost" style="'+(bw?'font-weight:700;':'opacity:0.5;')+'">'+bcs+(bw?' ✓':'')+'</span></td>'
@@ -819,7 +819,7 @@ function renderHopTable(hops) {
       +'<td style="color:'+lcc+';font-weight:600;">'+((h.packet_loss||0)*100).toFixed(1)+'%</td></tr>';
   }).join('');
   tf.style.display='';
-  const flEl = document.getElementById('footLatency'); flEl.textContent = tL.toFixed(1)+' ms'; flEl.style.color = tL>200?'var(--accent-red)':tL>80?'var(--accent-orange)':'var(--accent-green)';
+  var flEl = document.getElementById('footLatency'); flEl.textContent = tL.toFixed(1)+' ms'; flEl.style.color = tL>200?'var(--accent-red)':tL>80?'var(--accent-orange)':'var(--accent-green)';
   document.getElementById('footCost').textContent = tC.toFixed(4); document.getElementById('footCost').style.color = 'var(--accent-orange)';
   document.getElementById('footPower').textContent = 'avg: '+(hops.length>0?tP/hops.length:0).toFixed(3);
   document.getElementById('footLoss').textContent = 'max: '+(wL*100).toFixed(1)+'%';
@@ -828,7 +828,7 @@ function renderHopTable(hops) {
 function renderEmptyState() {
   document.getElementById('resultBanner').style.display='none'; document.getElementById('applyPanel').style.display='none';
   document.getElementById('pathLabel').textContent='—'; document.getElementById('pathSvg').innerHTML='';
-  ['sumHops','sumLatency','sumCost','sumPower','sumProto','sumStatus'].forEach(id=>{document.getElementById(id).textContent='—';});
+  ['sumHops','sumLatency','sumCost','sumPower','sumProto','sumStatus'].forEach(function(id){document.getElementById(id).textContent='—';});
   document.getElementById('sumProtoDetail').textContent='—'; document.getElementById('sumStatusDetail').textContent='—';
   document.getElementById('hopTableBody').innerHTML='<tr><td colspan="11"><div class="empty-state"><div class="icon">⬡</div><div class="title">Select source and destination nodes</div><div class="desc">Choose two nodes above to calculate the optimal path</div></div></td></tr>';
   document.getElementById('hopTableFoot').style.display='none';
@@ -850,9 +850,9 @@ function renderNoRouteState(src, dst) {
 
 document.getElementById('srcNode').addEventListener('change', analyzePath);
 document.getElementById('dstNode').addEventListener('change', analyzePath);
-document.getElementById('swapBtn').addEventListener('click', () => {
-  const s = document.getElementById('srcNode'), d = document.getElementById('dstNode');
-  const t = s.value; s.value = d.value; d.value = t; analyzePath();
+document.getElementById('swapBtn').addEventListener('click', function() {
+  var s = document.getElementById('srcNode'), d = document.getElementById('dstNode');
+  var t = s.value; s.value = d.value; d.value = t; analyzePath();
 });
 
 connectWS();
