@@ -50,10 +50,14 @@ log = logging.getLogger("dashboard-server")
 
 # ─────────────────────────────────────────────
 #  HMAC PACKET SIGNING
+#  Uses the same key and serialisation as gateway.py's verify_packet_raw:
+#    json.dumps(pkt, sort_keys=True, separators=(',', ':'))
+#  node.py's _sorted_json() produces identical output for well-formed dicts,
+#  so the signature will verify correctly on both ends.
 # ─────────────────────────────────────────────
 def sign_packet(pkt_dict: dict) -> dict:
     """Add HMAC-SHA256 'sig' field to pkt_dict in-place. Returns the dict."""
-    pkt_dict.pop("sig", None)
+    pkt_dict.pop("sig", None)   # remove any stale sig first
     payload = json.dumps(pkt_dict, sort_keys=True, separators=(',', ':')).encode()
     sig = hmac.new(SHARED_KEY, payload, hashlib.sha256).hexdigest()
     pkt_dict["sig"] = sig
@@ -416,78 +420,23 @@ def trace_path(src, dst, nodes, weights):
 
 
 # ═══════════════════════════════════════════════════
-#  ROUTE PREF DELIVERY (via gateway)
+#  SEND ROUTE_PREF DIRECTLY TO NODE VIA UDP
 # ═══════════════════════════════════════════════════
 
 BLE_PLACEHOLDERS = {"BLE-direct", "BLE-only", ""}
 
 def get_node_ip(node_data: dict) -> str:
-    """Return the best available IP for a node, or '' if BLE-only."""
+    """
+    Return the best available IP for sending UDP to a node.
+    Priority: sender_ip (real IP) → wifi_sender_ip → empty string.
+    BLE placeholder values ("BLE-direct", "BLE-only") are treated as absent.
+    """
     for field in ("sender_ip", "wifi_sender_ip"):
         ip = node_data.get(field, "")
         if ip and ip not in BLE_PLACEHOLDERS:
             return ip
     return ""
 
-
-async def send_route_pref_via_gateway(node_id: str, mode: str, weights: dict):
-    """
-    Forward a route-preference update to a node via the gateway's /route_pref endpoint.
-    The gateway decides delivery method automatically:
-      - WiFi node  → signed UDP packet sent directly to node IP
-      - BLE relay  → signed UDP to relay node, which BLE-advertises to target
-      - BLE direct → gateway BLE-advertises directly to target
-
-    Returns (ok: bool, message: str, delivery: str)
-    """
-    async with httpx.AsyncClient(timeout=8.0) as client:
-        try:
-            resp = await client.post(
-                f"{GATEWAY_URL}/route_pref",
-                json={"node_id": node_id, "mode": mode, "weights": weights}
-            )
-            data = resp.json()
-            return (
-                data.get("ok", False),
-                data.get("message", "") or data.get("error", ""),
-                data.get("delivery", ""),
-            )
-        except Exception as e:
-            return False, str(e), ""
-
-
-async def send_route_pref_batch_via_gateway(node_ids: list, mode: str, weights: dict):
-    """
-    Send route preference to multiple nodes in a single gateway call.
-    Uses the /route_pref_batch endpoint for efficiency.
-
-    Falls back to per-node calls if the batch endpoint is unavailable.
-
-    Returns dict: { node_id: {"ok": bool, "message": str, "delivery": str} }
-    """
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        try:
-            resp = await client.post(
-                f"{GATEWAY_URL}/route_pref_batch",
-                json={"node_ids": node_ids, "mode": mode, "weights": weights}
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                return data.get("node_results", {})
-            elif resp.status_code == 404:
-                # Gateway doesn't have batch endpoint — fall back to per-node
-                log.info("[RoutePref] Batch endpoint not available, falling back to per-node")
-            else:
-                log.warning(f"[RoutePref] Batch returned HTTP {resp.status_code}")
-        except Exception as e:
-            log.warning(f"[RoutePref] Batch call failed: {e}, falling back to per-node")
-
-    # Fallback: send one by one
-    results = {}
-    for nid in node_ids:
-        ok, msg, delivery = await send_route_pref_via_gateway(nid, mode, weights)
-        results[nid] = {"ok": ok, "message": msg, "delivery": delivery}
-    return results
 
 
 # ─────────────────────────────────────────────
@@ -520,6 +469,60 @@ async def api_path_analyze(request: Request):
         "total_latency": round(total_lat, 2),
         "total_cost": round(total_cost, 6),
     }
+
+# ─────────────────────────────────────────────
+#  HELPER: Send route pref via gateway (not direct UDP)
+# ─────────────────────────────────────────────
+async def send_route_pref_via_gateway(node_id: str, mode: str, weights: dict):
+    """
+    Forward a route-preference update to a node via the gateway's /route_pref endpoint.
+    The gateway decides delivery method automatically:
+      - WiFi node  → signed UDP packet sent directly to node IP
+      - BLE relay  → signed UDP to relay node, which BLE-advertises to target
+      - BLE direct → gateway BLE-advertises directly to target
+
+    Returns (ok: bool, message: str, delivery: str)
+    """
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.post(
+                f"{GATEWAY_URL}/route_pref",
+                json={"node_id": node_id, "mode": mode, "weights": weights}
+            )
+            data = resp.json()
+            return (
+                data.get("ok", False),
+                data.get("message", "") or data.get("error", ""),
+                data.get("delivery", ""),
+            )
+        except Exception as e:
+            return False, str(e), ""
+
+
+async def send_route_pref_batch_via_gateway(node_ids: list, mode: str, weights: dict):
+    """
+    Send route preference to multiple nodes via gateway batch endpoint.
+    Falls back to per-node calls if batch endpoint unavailable.
+    """
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.post(
+                f"{GATEWAY_URL}/route_pref_batch",
+                json={"node_ids": node_ids, "mode": mode, "weights": weights}
+            )
+            if resp.status_code == 200:
+                return resp.json().get("node_results", {})
+            elif resp.status_code == 404:
+                log.info("[RoutePref] Batch not available, falling back to per-node")
+        except Exception as e:
+            log.warning(f"[RoutePref] Batch failed: {e}, falling back")
+
+    # Fallback: one by one
+    results = {}
+    for nid in node_ids:
+        ok, msg, delivery = await send_route_pref_via_gateway(nid, mode, weights)
+        results[nid] = {"ok": ok, "message": msg, "delivery": delivery}
+    return results
 
 
 # ─────────────────────────────────────────────
@@ -555,15 +558,14 @@ async def api_path_apply(request: Request):
     if not node_ids:
         return {"error": "No nodes in path to update", "hops": hops}
 
-    # Use batch endpoint for efficiency
+    # Use batch endpoint for efficiency (handles WiFi, relay, BLE-direct)
     node_id_list = sorted(node_ids)
     results = await send_route_pref_batch_via_gateway(node_id_list, mode, weights)
 
-    # Fill in results for any nodes not returned by batch
+    # Fill in any missing results
     for nid in node_ids:
         if nid not in results:
-            results[nid] = {"ok": False, "message": "No response from gateway",
-                           "delivery": ""}
+            results[nid] = {"ok": False, "message": "No response", "delivery": ""}
 
     success_count = sum(1 for r in results.values() if r.get("ok"))
     fail_count    = len(results) - success_count
@@ -601,6 +603,7 @@ async def api_route_pref_set(request: Request):
         return {"ok": False, "error": f"Node {node_id!r} not in health matrix"}
 
     weights = WEIGHT_PROFILES[mode]
+    # Always route through the gateway — it handles WiFi (UDP) and BLE (advertisement)
     ok, msg, delivery = await send_route_pref_via_gateway(node_id, mode, weights)
     return {"ok": ok, "message": msg, "delivery": delivery, "mode": mode, "weights": weights}
 
